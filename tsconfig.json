@@ -16,7 +16,8 @@
       "@projectos/router": ["packages/router/index.ts"],
       "@projectos/tools": ["packages/tools/index.ts"],
       "@projectos/policy": ["packages/policy/index.ts"],
-      "@projectos/agents": ["packages/agents/index.ts"]
+      "@projectos/agents": ["packages/agents/index.ts"],
+      "@projectos/memory": ["packages/memory/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
