@@ -46,7 +46,7 @@ export type MachineEvent =
   | { type: "TESTS_PASS" }
   | { type: "TESTS_FAIL" }
   | { type: "REPAIR_DONE" }
-  | { type: "REVIEW_APPROVE" }
+  | { type: "REVIEW_APPROVE"; verdictProvided: boolean }
   | { type: "REVIEW_MUST_FIX" }
   | { type: "DOCUMENT_DONE" }
   | { type: "LEARN_DONE" }
@@ -148,7 +148,12 @@ export function transition(ctx: RunContext, event: MachineEvent): RunContext {
       break;
 
     case "REVIEW":
-      if (event.type === "REVIEW_APPROVE") return nextWorkUnit(ctx);
+      if (event.type === "REVIEW_APPROVE") {
+        if (!event.verdictProvided) {
+          return escalate(ctx, "cannot approve review: no verdict object provided");
+        }
+        return nextWorkUnit(ctx);
+      }
       if (event.type === "REVIEW_MUST_FIX") {
         if (ctx.reviewCycleCount >= ctx.bounds.maxReview) {
           return escalate(ctx, `max review cycles (${ctx.bounds.maxReview}) exceeded`);

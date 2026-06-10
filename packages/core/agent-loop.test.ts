@@ -70,11 +70,11 @@ describe("runAgentLoop", () => {
       // wu-1
       { type: "IMPLEMENT_DONE" }, // IMPLEMENT → TEST
       { type: "TESTS_PASS" },     // TEST → REVIEW
-      { type: "REVIEW_APPROVE" }, // REVIEW → IMPLEMENT (wu-2)
+      { type: "REVIEW_APPROVE", verdictProvided: true }, // REVIEW → IMPLEMENT (wu-2)
       // wu-2
       { type: "IMPLEMENT_DONE" },
       { type: "TESTS_PASS" },
-      { type: "REVIEW_APPROVE" }, // → DOCUMENT
+      { type: "REVIEW_APPROVE", verdictProvided: true }, // → DOCUMENT
       { type: "DOCUMENT_DONE" },
       { type: "LEARN_DONE" },
     ]);
@@ -98,7 +98,7 @@ describe("runAgentLoop", () => {
       { type: "REVIEW_MUST_FIX" }, // → IMPLEMENT (reviewCycle=1)
       { type: "IMPLEMENT_DONE" },  // → TEST
       { type: "TESTS_PASS" },
-      { type: "REVIEW_APPROVE" }, // → DOCUMENT
+      { type: "REVIEW_APPROVE", verdictProvided: true }, // → DOCUMENT
       { type: "DOCUMENT_DONE" },
       { type: "LEARN_DONE" },
     ]);
@@ -135,10 +135,10 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "IMPLEMENT_DONE" }, // → TEST
       { type: "TESTS_PASS" },
-      { type: "REVIEW_APPROVE" }, // → IMPLEMENT wu-1
+      { type: "REVIEW_APPROVE", verdictProvided: true }, // → IMPLEMENT wu-1
       { type: "IMPLEMENT_DONE" },
       { type: "TESTS_PASS" },
-      { type: "REVIEW_APPROVE" }, // → DOCUMENT
+      { type: "REVIEW_APPROVE", verdictProvided: true }, // → DOCUMENT
       { type: "DOCUMENT_DONE" },
       { type: "LEARN_DONE" },
     ]);

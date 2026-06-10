@@ -3,3 +3,5 @@ export type { InterviewQuestion, InterviewAnswer, InterviewSessionOptions, Quest
 export { DEFAULT_QUESTIONS, buildQuestions, criticalQuestions } from "./product-strategist";
 export { BlueprintSession, BLUEPRINT_FILES } from "./architect";
 export type { BlueprintContent, AdrEntry, BlueprintFile, BlueprintSessionOptions } from "./architect";
+export { Reviewer, validateVerdict } from "./reviewer";
+export type { ReviewVerdict, ReviewSession, Risk, RiskSeverity } from "./reviewer";

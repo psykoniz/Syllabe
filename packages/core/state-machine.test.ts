@@ -59,7 +59,7 @@ describe("happy path transitions", () => {
 
   it("REVIEW → next IMPLEMENT work unit on REVIEW_APPROVE", () => {
     const ctx: RunContext = { ...makeContext(), state: "REVIEW", workUnits: wu, workUnitIndex: 0 };
-    const next = transition(ctx, { type: "REVIEW_APPROVE" });
+    const next = transition(ctx, { type: "REVIEW_APPROVE", verdictProvided: true });
     expect(next.state).toBe("IMPLEMENT");
     expect(next.workUnitIndex).toBe(1);
     expect(next.repairCount).toBe(0);
@@ -68,7 +68,7 @@ describe("happy path transitions", () => {
 
   it("REVIEW → DOCUMENT when last work unit approved", () => {
     const ctx: RunContext = { ...makeContext(), state: "REVIEW", workUnits: wu, workUnitIndex: 1 };
-    expect(transition(ctx, { type: "REVIEW_APPROVE" }).state).toBe("DOCUMENT");
+    expect(transition(ctx, { type: "REVIEW_APPROVE", verdictProvided: true }).state).toBe("DOCUMENT");
   });
 
   it("DOCUMENT → LEARN → COMPLETE", () => {
