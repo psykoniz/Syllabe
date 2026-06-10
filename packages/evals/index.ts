@@ -4,3 +4,7 @@ export { aggregateScores, formatScoreTable } from "./scorers";
 export type { TaskScore, AggregateScore, ScoreStatus } from "./scorers";
 export { BaselineStore } from "./baseline";
 export type { BaselineEntry, ComparisonResult } from "./baseline";
+export { CandidateRunner } from "./candidate-runner";
+export type { CandidateRun, CandidateRunnerOptions } from "./candidate-runner";
+export { Frontier, DEFAULT_PROMOTION_RULES } from "./frontier";
+export type { PromotionRecord, PromotionRules } from "./frontier";
