@@ -13,7 +13,8 @@
     "paths": {
       "@projectos/core": ["packages/core/index.ts"],
       "@projectos/telemetry": ["packages/telemetry/index.ts"],
-      "@projectos/router": ["packages/router/index.ts"]
+      "@projectos/router": ["packages/router/index.ts"],
+      "@projectos/tools": ["packages/tools/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
