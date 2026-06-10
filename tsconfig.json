@@ -14,7 +14,8 @@
       "@projectos/core": ["packages/core/index.ts"],
       "@projectos/telemetry": ["packages/telemetry/index.ts"],
       "@projectos/router": ["packages/router/index.ts"],
-      "@projectos/tools": ["packages/tools/index.ts"]
+      "@projectos/tools": ["packages/tools/index.ts"],
+      "@projectos/policy": ["packages/policy/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
