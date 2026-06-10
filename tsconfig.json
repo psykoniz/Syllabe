@@ -12,7 +12,8 @@
     "ignoreDeprecations": "6.0",
     "paths": {
       "@projectos/core": ["packages/core/index.ts"],
-      "@projectos/telemetry": ["packages/telemetry/index.ts"]
+      "@projectos/telemetry": ["packages/telemetry/index.ts"],
+      "@projectos/router": ["packages/router/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
