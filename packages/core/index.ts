@@ -1,2 +1,10 @@
 export { ProjectSession } from "./session";
 export type { SessionConfig, RunRecord } from "./session";
+export { makeContext, transition, STATES } from "./state-machine";
+export type { State, RunContext, WorkUnit, MachineEvent, LoopBounds, OverflowPolicy } from "./state-machine";
+export { runAgentLoop } from "./agent-loop";
+export type { AgentHandler, AgentLoopOptions, LoopResult } from "./agent-loop";
+export { runWorkUnit } from "./task-runner";
+export type { TaskExecutor, TaskResult, TaskRunnerOptions } from "./task-runner";
+export { writeCheckpoint, loadCheckpoints, loadLatestCheckpoint, ensureCheckpointTable } from "./checkpoint";
+export type { CheckpointRow } from "./checkpoint";
