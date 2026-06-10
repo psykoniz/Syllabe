@@ -27,6 +27,10 @@
         "@anthropic-ai/sdk": "latest",
       },
     },
+    "packages/router": {
+      "name": "@projectos/router",
+      "version": "0.0.1",
+    },
     "packages/telemetry": {
       "name": "@projectos/telemetry",
       "version": "0.0.1",
@@ -40,6 +44,8 @@
     "@projectos/cli": ["@projectos/cli@workspace:apps/cli"],
 
     "@projectos/core": ["@projectos/core@workspace:packages/core"],
+
+    "@projectos/router": ["@projectos/router@workspace:packages/router"],
 
     "@projectos/telemetry": ["@projectos/telemetry@workspace:packages/telemetry"],
 
