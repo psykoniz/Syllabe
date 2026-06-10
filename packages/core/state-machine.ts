@@ -41,7 +41,7 @@ export interface RunContext {
 export type MachineEvent =
   | { type: "CLARIFY_DONE" }
   | { type: "DESIGN_DONE" }
-  | { type: "PLAN_DONE"; workUnits: WorkUnit[] }
+  | { type: "PLAN_DONE"; workUnits: WorkUnit[]; blueprintValidated: boolean }
   | { type: "IMPLEMENT_DONE" }
   | { type: "TESTS_PASS" }
   | { type: "TESTS_FAIL" }
@@ -113,6 +113,9 @@ export function transition(ctx: RunContext, event: MachineEvent): RunContext {
 
     case "DESIGN":
       if (event.type === "PLAN_DONE") {
+        if (!event.blueprintValidated) {
+          return escalate(ctx, "blueprint incomplete: all 4 blueprint files must exist and be non-empty");
+        }
         return { ...ctx, state: "PLAN", workUnits: event.workUnits };
       }
       break;

@@ -30,7 +30,7 @@ describe("happy path transitions", () => {
 
   it("DESIGN → PLAN on PLAN_DONE, stores work units", () => {
     const ctx: RunContext = { ...makeContext(), state: "DESIGN" };
-    const next = transition(ctx, { type: "PLAN_DONE", workUnits: wu });
+    const next = transition(ctx, { type: "PLAN_DONE", workUnits: wu, blueprintValidated: true });
     expect(next.state).toBe("PLAN");
     expect(next.workUnits).toHaveLength(2);
   });

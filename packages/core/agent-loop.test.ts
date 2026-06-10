@@ -31,7 +31,7 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
-      { type: "PLAN_DONE", workUnits: [] },
+      { type: "PLAN_DONE", workUnits: [], blueprintValidated: true },
       { type: "IMPLEMENT_DONE" }, // PLAN → DOCUMENT (no work units)
       { type: "DOCUMENT_DONE" },
       { type: "LEARN_DONE" },
@@ -47,7 +47,7 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
-      { type: "PLAN_DONE", workUnits: [] },
+      { type: "PLAN_DONE", workUnits: [], blueprintValidated: true },
       { type: "IMPLEMENT_DONE" },
       { type: "DOCUMENT_DONE" },
       { type: "LEARN_DONE" },
@@ -65,7 +65,7 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
-      { type: "PLAN_DONE", workUnits: wu },
+      { type: "PLAN_DONE", workUnits: wu, blueprintValidated: true },
       { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT (wu-1)
       // wu-1
       { type: "IMPLEMENT_DONE" }, // IMPLEMENT → TEST
@@ -87,7 +87,7 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
-      { type: "PLAN_DONE", workUnits: [wu[0]] },
+      { type: "PLAN_DONE", workUnits: [wu[0]], blueprintValidated: true },
       { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT
       // wu-0: one repair
       { type: "IMPLEMENT_DONE" }, // → TEST
@@ -112,7 +112,7 @@ describe("runAgentLoop", () => {
     const handler = scriptedHandler([
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
-      { type: "PLAN_DONE", workUnits: [wu[0]] },
+      { type: "PLAN_DONE", workUnits: [wu[0]], blueprintValidated: true },
       { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT
       { type: "IMPLEMENT_DONE" }, // IMPLEMENT → TEST
       { type: "TESTS_FAIL" },     // → REPAIR (count=1, limit=1 → next fail escalates)
