@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["@types/bun"],
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@projectos/core": ["packages/core/index.ts"],
+      "@projectos/telemetry": ["packages/telemetry/index.ts"]
+    }
+  },
+  "include": ["apps/**/*", "packages/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
