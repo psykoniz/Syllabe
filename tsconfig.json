@@ -17,7 +17,8 @@
       "@projectos/tools": ["packages/tools/index.ts"],
       "@projectos/policy": ["packages/policy/index.ts"],
       "@projectos/agents": ["packages/agents/index.ts"],
-      "@projectos/memory": ["packages/memory/index.ts"]
+      "@projectos/memory": ["packages/memory/index.ts"],
+      "@projectos/evals": ["packages/evals/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
