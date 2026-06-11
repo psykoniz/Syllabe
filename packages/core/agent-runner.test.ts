@@ -163,7 +163,7 @@ describe("runAgent — basic", () => {
       }
     );
 
-    expect(toolResultSeen).toContain("permission denied");
+    expect(toolResultSeen ?? "").toContain("permission denied");
     rmSync(TMP, { recursive: true, force: true });
   });
 
