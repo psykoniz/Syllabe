@@ -71,6 +71,8 @@ export class BaselineStore {
         candidatePassRate: cs.passRate,
         delta: cs.passRate - bs.passRate,
         costDelta: cs.meanCostUsd - bs.meanCostUsd,
+        baseMeanCostUsd: bs.meanCostUsd,
+        candidateMeanCostUsd: cs.meanCostUsd,
         promoted: cs.passRate >= bs.passRate && !cs.anySecretsLeaked,
       });
     }
@@ -89,5 +91,7 @@ export interface ComparisonResult {
   candidatePassRate: number;
   delta: number;
   costDelta: number;
+  baseMeanCostUsd: number;
+  candidateMeanCostUsd: number;
   promoted: boolean;
 }

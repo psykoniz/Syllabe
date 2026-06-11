@@ -134,6 +134,8 @@ export const selfImproveCommand = new Command("self-improve")
         candidatePassRate: c.passRate,
         delta: c.passRate - b.passRate,
         costDelta: c.meanCostUsd - b.meanCostUsd,
+        baseMeanCostUsd: b.meanCostUsd,
+        candidateMeanCostUsd: c.meanCostUsd,
         promoted: c.passRate >= b.passRate && !c.anySecretsLeaked,
       };
     }).filter((x): x is NonNullable<typeof x> => x !== null);
@@ -155,7 +157,7 @@ export const selfImproveCommand = new Command("self-improve")
       if (record.adrPath) console.log(`ADR written: ${record.adrPath}`);
     } else {
       recordRejection(rejectionsPath, proposal.change);
-      console.log("\nCandidate rejected — regressions detected or secrets leaked.");
+      console.log("\nCandidate rejected — regression, secret leak, or cost guard exceeded.");
       console.log(`Rejection recorded: ${rejectionsPath}`);
       process.exit(1);
     }

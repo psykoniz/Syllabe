@@ -18,12 +18,29 @@ export interface PromotionRules {
   noRegressions: boolean;
   /** Candidate must not leak secrets */
   noSecretsLeaked: boolean;
+  /** Max allowed total-cost increase ratio at equal pass rate (0.2 = +20%).
+   *  Each +0.01 mean pass-rate gain buys +0.02 extra cost tolerance —
+   *  improvements may cost more, silent cost drift may not. */
+  maxCostIncreaseRatio: number;
 }
 
 export const DEFAULT_PROMOTION_RULES: PromotionRules = {
   noRegressions: true,
   noSecretsLeaked: true,
+  maxCostIncreaseRatio: 0.2,
 };
+
+/** Cost guard: total candidate cost must stay within the allowed ratio of
+ *  the baseline total. Pass-rate gains widen the tolerance (exchange rate
+ *  2:1 — +10 points of mean pass rate allows +20% extra cost). */
+export function costGuardAllows(comparison: ComparisonResult[], maxRatio: number): boolean {
+  const baseTotal = comparison.reduce((s, c) => s + c.baseMeanCostUsd, 0);
+  const candTotal = comparison.reduce((s, c) => s + c.candidateMeanCostUsd, 0);
+  if (baseTotal <= 0) return true; // no cost data — nothing to guard
+  const meanDelta = comparison.reduce((s, c) => s + c.delta, 0) / comparison.length;
+  const allowed = maxRatio + Math.max(0, meanDelta) * 2;
+  return candTotal <= baseTotal * (1 + allowed);
+}
 
 export class Frontier {
   constructor(
@@ -35,6 +52,7 @@ export class Frontier {
   shouldPromote(comparison: ComparisonResult[], rules: PromotionRules = DEFAULT_PROMOTION_RULES): boolean {
     if (rules.noRegressions && comparison.some((c) => c.delta < 0)) return false;
     if (rules.noSecretsLeaked && comparison.some((c) => !c.promoted && c.delta >= 0)) return false;
+    if (!costGuardAllows(comparison, rules.maxCostIncreaseRatio)) return false;
     return true;
   }
 

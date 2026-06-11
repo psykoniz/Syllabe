@@ -70,6 +70,8 @@ describe("self-improve workflow — end-to-end simulation", () => {
         candidatePassRate: c.passRate,
         delta: c.passRate - b.passRate,
         costDelta: 0,
+        baseMeanCostUsd: 1,
+        candidateMeanCostUsd: 1,
         promoted: c.passRate >= b.passRate,
       };
     });
@@ -104,6 +106,8 @@ describe("self-improve workflow — end-to-end simulation", () => {
         candidatePassRate: c.passRate,
         delta: c.passRate - b.passRate,
         costDelta: 0,
+        baseMeanCostUsd: 1,
+        candidateMeanCostUsd: 1,
         promoted: c.passRate >= b.passRate,
       };
     });
@@ -130,7 +134,9 @@ describe("self-improve workflow — end-to-end simulation", () => {
     const latest = store.latest()!;
     const comparison = latest.scores.map((b) => {
       const c = candidateScores.find((s) => s.taskId === b.taskId)!;
-      return { taskId: b.taskId, basePassRate: b.passRate, candidatePassRate: c.passRate, delta: c.passRate - b.passRate, costDelta: 0, promoted: true };
+      return { taskId: b.taskId, basePassRate: b.passRate, candidatePassRate: c.passRate, delta: c.passRate - b.passRate, costDelta: 0,
+        baseMeanCostUsd: 1,
+        candidateMeanCostUsd: 1, promoted: true };
     });
 
     const frontier = new Frontier(store, harnessDir);
@@ -157,7 +163,9 @@ describe("self-improve workflow — end-to-end simulation", () => {
     const latest = store.latest()!;
     const comparison = latest.scores.map((b) => {
       const c = candidateScores.find((s) => s.taskId === b.taskId)!;
-      return { taskId: b.taskId, basePassRate: b.passRate, candidatePassRate: c.passRate, delta: c.passRate - b.passRate, costDelta: 0, promoted: true };
+      return { taskId: b.taskId, basePassRate: b.passRate, candidatePassRate: c.passRate, delta: c.passRate - b.passRate, costDelta: 0,
+        baseMeanCostUsd: 1,
+        candidateMeanCostUsd: 1, promoted: true };
     });
 
     new Frontier(store, harnessDir).promote("auto-004", {}, candidateScores, comparison);

@@ -159,7 +159,7 @@ describe("Frontier", () => {
     const store = new BaselineStore(baselineFile());
     const f = new Frontier(store, harnessDir());
     expect(f.shouldPromote([
-      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, promoted: true },
+      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: true },
     ])).toBe(true);
   });
 
@@ -167,7 +167,7 @@ describe("Frontier", () => {
     const store = new BaselineStore(baselineFile());
     const f = new Frontier(store, harnessDir());
     expect(f.shouldPromote([
-      { taskId: "t1", basePassRate: 0.8, candidatePassRate: 0.6, delta: -0.2, costDelta: 0, promoted: false },
+      { taskId: "t1", basePassRate: 0.8, candidatePassRate: 0.6, delta: -0.2, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: false },
     ])).toBe(false);
   });
 
@@ -176,7 +176,7 @@ describe("Frontier", () => {
     const f = new Frontier(store, harnessDir());
     // promoted=false but delta>=0 means secrets leaked (per baseline compare logic)
     expect(f.shouldPromote([
-      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 1.0, delta: 0.5, costDelta: 0, promoted: false },
+      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 1.0, delta: 0.5, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: false },
     ])).toBe(false);
   });
 
@@ -186,7 +186,7 @@ describe("Frontier", () => {
     store.store([{ taskId: "t1", runs: [], meanCostUsd: 0, worstCostUsd: 0, passRate: 0.5, anySecretsLeaked: false, hasPendingLabels: false }]);
     const f = new Frontier(store, harnessDir());
     const comparison = [
-      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, promoted: true },
+      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: true },
     ];
     const record = f.promote(
       "cand-001",
@@ -205,12 +205,12 @@ describe("Frontier", () => {
     const f = new Frontier(store, harnessDir());
 
     const regression = [
-      { taskId: "t1", basePassRate: 0.8, candidatePassRate: 0.5, delta: -0.3, costDelta: 0, promoted: false },
+      { taskId: "t1", basePassRate: 0.8, candidatePassRate: 0.5, delta: -0.3, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: false },
     ];
     expect(f.shouldPromote(regression)).toBe(false);
 
     const improvement = [
-      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.9, delta: 0.4, costDelta: 0, promoted: true },
+      { taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.9, delta: 0.4, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: true },
     ];
     expect(f.shouldPromote(improvement)).toBe(true);
   });
@@ -231,7 +231,7 @@ describe("Frontier", () => {
       "cand-001",
       { loopBounds: { maxRepair: 5 } },
       [{ taskId: "t1", runs: [], meanCostUsd: 0, worstCostUsd: 0, passRate: 0.8, anySecretsLeaked: false, hasPendingLabels: false }],
-      [{ taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, promoted: true }]
+      [{ taskId: "t1", basePassRate: 0.5, candidatePassRate: 0.8, delta: 0.3, costDelta: 0, baseMeanCostUsd: 1, candidateMeanCostUsd: 1, promoted: true }]
     );
     const f2 = new Frontier(store, harnessDir());
     expect(f2.loadPromotions()).toHaveLength(1);
