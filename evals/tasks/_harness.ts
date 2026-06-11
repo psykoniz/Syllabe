@@ -3,7 +3,7 @@
  * When ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY is set, spins up a real ProjectRun.
  * Otherwise returns a "skip" result so CI doesn't fail without credentials.
  */
-import { mkdirSync, rmSync } from "fs";
+import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { Database } from "bun:sqlite";
@@ -19,6 +19,22 @@ export type EvalRunOpts = {
   /** Loop bounds override (e.g. from a candidate config under benchmark) */
   loopBounds?: { maxRepair: number; maxReview: number };
 };
+
+/** Sum cost across all trace events using the telemetry price table */
+function computeCostFromTraces(tracePath: string): number {
+  if (!existsSync(tracePath)) return 0;
+  try {
+    const { computeCost } = require("@projectos/telemetry");
+    const lines = readFileSync(tracePath, "utf8").trim().split("\n").filter(Boolean);
+    const usage = lines.map((l: string) => {
+      const e = JSON.parse(l);
+      return { model: e.model, inputTokens: e.inputTokens ?? 0, outputTokens: e.outputTokens ?? 0 };
+    });
+    return computeCost(usage).totalUsd;
+  } catch {
+    return 0;
+  }
+}
 
 /** Read loop bounds from PROJECTOS_LOOP_BOUNDS env (JSON, e.g. '{"maxRepair":3,"maxReview":3}') */
 function envLoopBounds(): { maxRepair: number; maxReview: number } | undefined {
@@ -72,6 +88,8 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
   let passed = false;
   let secretsLeaked = false;
   let notes = "";
+  let costUsd = 0;
+  const tracePath = join(workspace, ".projectos", "traces.jsonl");
 
   try {
     const createMessage = await defaultCreateMessage();
@@ -80,7 +98,7 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
       task: opts.task,
       workspace,
       db,
-      tracePath: join(workspace, ".projectos", "traces.jsonl"),
+      tracePath,
       createMessage,
       autoYes: true,
       maxIterationsPerState: 20,
@@ -97,13 +115,14 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
   } catch (err) {
     notes = `error: ${(err as Error).message}`;
   } finally {
+    costUsd = computeCostFromTraces(tracePath);
     db.close();
     rmSync(workspace, { recursive: true, force: true });
   }
 
   return {
     passed,
-    costUsd: 0,  // cost tracking via traces.jsonl — not yet wired into eval score
+    costUsd,
     durationMs: Date.now() - start,
     secretsLeaked,
     notes,
