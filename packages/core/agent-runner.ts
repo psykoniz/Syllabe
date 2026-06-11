@@ -81,6 +81,8 @@ export interface AgentRunnerOptions {
   permissions?: PermissionEngine;
   approval?: ApprovalHandler;
   maxIterations?: number;
+  /** Max characters of a single tool result fed back to the model (default 16000) */
+  maxToolResultChars?: number;
   maxTokensPerTurn?: number;
   onTurn?: (info: TurnInfo) => void;
 }
@@ -176,9 +178,22 @@ async function executeToolUse(
   return {
     type: "tool_result",
     tool_use_id: block.id,
-    content: redact(dispatched.content),
+    content: truncateResult(redact(dispatched.content), opts.maxToolResultChars),
     is_error: dispatched.isError || undefined,
   };
+}
+
+/** Cap tool output fed back into context — long test logs and file dumps
+ *  dominate input-token spend otherwise. Head+tail keeps errors visible. */
+function truncateResult(content: string, maxChars = 16000): string {
+  if (content.length <= maxChars) return content;
+  const half = Math.floor(maxChars / 2);
+  const omitted = content.length - maxChars;
+  return (
+    content.slice(0, half) +
+    `\n\n[... ${omitted} characters truncated ...]\n\n` +
+    content.slice(-half)
+  );
 }
 
 function textOf(content: ContentBlock[]): string {

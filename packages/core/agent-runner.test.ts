@@ -201,3 +201,50 @@ describe("runAgent — basic", () => {
     rmSync(TMP, { recursive: true, force: true });
   });
 });
+
+describe("runAgent — tool result truncation", () => {
+  it("truncates oversized tool output, keeping head and tail", async () => {
+    const ctx = makeFakeCtx();
+    mkdirSync(TMP, { recursive: true });
+    // A file larger than the truncation cap
+    const big = "HEAD_MARKER\n" + "x".repeat(50000) + "\nTAIL_MARKER";
+    const { writeFileSync } = require("fs");
+    writeFileSync(join(TMP, "big.txt"), big, "utf8");
+
+    let toolResultSeen = "";
+    let call = 0;
+    const create: CreateMessageFn = async (params) => {
+      call++;
+      if (call === 1) {
+        return {
+          content: [{ type: "tool_use", id: "t1", name: "read_file", input: { path: join(TMP, "big.txt") } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 5, output_tokens: 5 },
+        };
+      }
+      const last = params.messages[params.messages.length - 1];
+      if (Array.isArray(last.content)) {
+        const tr = last.content.find((b) => b.type === "tool_result");
+        if (tr && typeof (tr as { content?: string }).content === "string") {
+          toolResultSeen = (tr as { content: string }).content;
+        }
+      }
+      return {
+        content: [{ type: "text", text: "done" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 5 },
+      };
+    };
+
+    await runAgent(
+      [{ role: "user", content: "read the big file" }],
+      { createMessage: create, model: "claude-sonnet-4-6", toolContext: ctx, maxToolResultChars: 1000 }
+    );
+
+    expect(toolResultSeen.length).toBeLessThan(1200);
+    expect(toolResultSeen).toContain("HEAD_MARKER");
+    expect(toolResultSeen).toContain("TAIL_MARKER");
+    expect(toolResultSeen).toContain("characters truncated");
+    rmSync(TMP, { recursive: true, force: true });
+  });
+});
