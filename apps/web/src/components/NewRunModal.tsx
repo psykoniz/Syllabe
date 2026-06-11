@@ -22,7 +22,7 @@ export default function NewRunModal({ onClose }: Props) {
   const [provider, setProvider] = useState<"anthropic" | "openai">("openai");
   const [model, setModel] = useState("gpt-5.5");
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [baseUrl, setBaseUrl] = useState("https://codex-everywhere.com");
   const [autoYes, setAutoYes] = useState(true);
   const [sandbox, setSandbox] = useState(false);
   const [loading, setLoading] = useState(false);
