@@ -77,11 +77,25 @@ function openDb(path: string): Database {
   return db;
 }
 
-async function defaultCreateMessage(): Promise<CreateMessageFn> {
+export async function defaultCreateMessage(): Promise<CreateMessageFn> {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
-  return (params) =>
-    client.messages.create(params as never) as unknown as ReturnType<CreateMessageFn>;
+  return async (params) => {
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await client.messages.create(params as never) as unknown as ReturnType<CreateMessageFn>;
+      } catch (e: unknown) {
+        const status = (e as { status?: number }).status;
+        const retryable = status === 429 || status === 503 || status === 502 || status === 504;
+        if (!retryable || attempt === maxRetries - 1) throw e;
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        console.error(`[retry ${attempt + 1}/${maxRetries}] HTTP ${status} — waiting ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw new Error("unreachable");
+  };
 }
 
 export class ProjectSession {

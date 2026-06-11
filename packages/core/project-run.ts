@@ -29,6 +29,8 @@ export interface ProjectRunConfig {
   /** Apply all interview defaults without prompting */
   autoYes?: boolean;
   maxIterationsPerState?: number;
+  /** Force all role calls to use this model (useful when fable is unavailable) */
+  modelOverride?: string;
 }
 
 /** State → role mapping */
@@ -278,7 +280,7 @@ export class ProjectRun implements AgentHandler {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private async callAgent(role: Role, prompt: string) {
-    const model = resolveModel(role);
+    const model = this.cfg.modelOverride ?? resolveModel(role);
     const system = buildSystemPrompt({
       workspace: this.cfg.workspace,
       branch: this.toolContext.branch?.(),
