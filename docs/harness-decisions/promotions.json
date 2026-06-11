@@ -58,5 +58,65 @@
       }
     ],
     "adrPath": "/root/.projectos/harness/decisions/ADR-001-harness-optimizer-candidate-auto-1781157064589.md"
+  },
+  {
+    "candidateId": "auto-1781165329347",
+    "config": {
+      "systemPrompts": {
+        "implementer": "You are a senior software implementer working inside a build pipeline.\nA reviewer has rejected previous attempts. Before writing any code:\n1. Re-read the reviewer's mustFix list and restate each item in your own words.\n2. Address every mustFix item explicitly — do not move on while any remain.\n3. Run the tests after your changes and confirm they pass before finishing.\nNever repeat an approach the reviewer already rejected."
+      }
+    },
+    "promotedAt": "2026-06-11T09:37:18.361Z",
+    "comparison": [
+      {
+        "taskId": "task-00-smoke",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0.147431,
+        "promoted": true
+      },
+      {
+        "taskId": "task-01-todo-app",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0.5877429999999999,
+        "promoted": true
+      },
+      {
+        "taskId": "task-02-stripe",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0.945757,
+        "promoted": true
+      },
+      {
+        "taskId": "task-03-bug-fix",
+        "basePassRate": 0,
+        "candidatePassRate": 1,
+        "delta": 1,
+        "costDelta": 1.108617,
+        "promoted": true
+      },
+      {
+        "taskId": "task-04-playwright",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0.509325,
+        "promoted": true
+      },
+      {
+        "taskId": "task-05-landing-page",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0.7651959999999999,
+        "promoted": true
+      }
+    ],
+    "adrPath": "/root/.projectos/harness/decisions/ADR-002-harness-optimizer-candidate-auto-1781165329347.md"
   }
 ]
