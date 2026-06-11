@@ -2,6 +2,8 @@ export { ProjectSession } from "./session";
 export type { SessionConfig, RunRecord } from "./session";
 export { buildSystemPrompt } from "./system-prompt";
 export type { SystemPromptOptions } from "./system-prompt";
+export { ProjectRun } from "./project-run";
+export type { ProjectRunConfig } from "./project-run";
 export { runAgent } from "./agent-runner";
 export type {
   CreateMessageFn,
