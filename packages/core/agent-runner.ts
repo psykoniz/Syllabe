@@ -69,12 +69,17 @@ export interface CreateMessageParams {
   output_config?: { effort: "low" | "medium" | "high" | "max" };
 }
 
-/** Premium reasoning models get adaptive thinking at max effort. */
+export type EffortLevel = "low" | "medium" | "high" | "max";
+
+/** Premium reasoning models get adaptive thinking; effort defaults to "high"
+ *  and can be raised to "max" per call for genuinely hard phases — paying
+ *  for maximum reflection on every call (incl. trivial ones) is waste. */
 export function reasoningParams(
-  model: string
+  model: string,
+  effort?: EffortLevel
 ): Pick<CreateMessageParams, "thinking" | "output_config"> {
   if (model.includes("fable") || model.includes("opus")) {
-    return { thinking: { type: "adaptive" }, output_config: { effort: "max" } };
+    return { thinking: { type: "adaptive" }, output_config: { effort: effort ?? "high" } };
   }
   return {};
 }
@@ -118,6 +123,9 @@ export interface AgentRunnerOptions {
   /** Context compaction policy. Defaults to DEFAULT_COMPACTION (~80k tokens). */
   compaction?: CompactionOptions;
   onTurn?: (info: TurnInfo) => void;
+  /** Reasoning effort for premium models (default "high"; use "max" only
+   *  for genuinely hard phases — design, review) */
+  effort?: EffortLevel;
   /** Async tool dispatcher for extended tool sets (e.g. playwright).
    *  Called first; falls through to the default dispatchTool when it returns null. */
   extraDispatcher?: (
@@ -333,7 +341,7 @@ export async function runAgent(
       system,
       messages,
       tools,
-      ...reasoningParams(opts.model),
+      ...reasoningParams(opts.model, opts.effort),
     });
 
     inputTokens += response.usage.input_tokens;
