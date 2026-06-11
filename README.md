@@ -11,6 +11,22 @@ bun run apps/cli/index.ts build --task "Build a REST API with CRUD endpoints for
 
 Add `--model-override claude-sonnet-4-6` if the default model is unavailable.
 
+## Multiply utility
+
+This workspace includes a small TypeScript `multiply(a: number, b: number): number` utility in `packages/multiply/index.ts`. It was built as a focused example of a typed arithmetic helper with a `bun:test` unit test in `packages/multiply/multiply.test.ts`, making it easy to verify expected behavior in the existing Bun workspace.
+
+Run the project CLI with Bun:
+
+```bash
+bun run apps/cli/index.ts build --task "Build a REST API with CRUD endpoints for a todo list" --yes
+```
+
+Run the test suite with Bun:
+
+```bash
+bun test
+```
+
 ## CLI commands
 
 | Command | Description |
