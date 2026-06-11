@@ -36,6 +36,21 @@ function computeCostFromTraces(tracePath: string): number {
   }
 }
 
+/** Read per-role system prompt overrides from PROJECTOS_SYSTEM_PROMPTS env (JSON object role→prompt) */
+function envSystemPrompts(): Record<string, string> | undefined {
+  const raw = process.env.PROJECTOS_SYSTEM_PROMPTS;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && Object.values(parsed).every((v) => typeof v === "string")) {
+      return parsed;
+    }
+  } catch {
+    // ignore malformed env
+  }
+  return undefined;
+}
+
 /** Read loop bounds from PROJECTOS_LOOP_BOUNDS env (JSON, e.g. '{"maxRepair":3,"maxReview":3}') */
 function envLoopBounds(): { maxRepair: number; maxReview: number } | undefined {
   const raw = process.env.PROJECTOS_LOOP_BOUNDS;
@@ -104,6 +119,7 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
       maxIterationsPerState: 20,
       modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
       loopBounds: opts.loopBounds ?? envLoopBounds(),
+      systemPromptOverrides: envSystemPrompts(),
     });
 
     const result = await run.run();

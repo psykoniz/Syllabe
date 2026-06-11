@@ -79,11 +79,27 @@ export class HarnessOptimizer {
   }
 }
 
+const IMPLEMENTER_CONVERGENCE_PROMPT = [
+  "You are a senior software implementer working inside a build pipeline.",
+  "A reviewer has rejected previous attempts. Before writing any code:",
+  "1. Re-read the reviewer's mustFix list and restate each item in your own words.",
+  "2. Address every mustFix item explicitly — do not move on while any remain.",
+  "3. Run the tests after your changes and confirm they pass before finishing.",
+  "Never repeat an approach the reviewer already rejected.",
+].join("\n");
+
 function buildChangeForPattern(pattern: FailurePattern): CandidateConfig {
   if (pattern.state === "REPAIR" || pattern.reason.includes("repair")) {
     return { loopBounds: { maxRepair: 5 } };
   }
   if (pattern.state === "REVIEW" || pattern.reason.includes("review")) {
+    // If cycles were already raised beyond the default 2 and still fail,
+    // the bottleneck is convergence behaviour, not the bound — target the prompt.
+    const cyclesMatch = /\((\d+)\)/.exec(pattern.reason);
+    const cycles = cyclesMatch ? parseInt(cyclesMatch[1], 10) : 2;
+    if (cycles >= 3) {
+      return { systemPrompts: { implementer: IMPLEMENTER_CONVERGENCE_PROMPT } };
+    }
     return { loopBounds: { maxReview: 3 } };
   }
   if (pattern.reason.includes("budget") || pattern.reason.includes("overflow")) {

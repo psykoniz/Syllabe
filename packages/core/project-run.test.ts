@@ -352,3 +352,48 @@ describe("work unit fallback", () => {
     expect(result.steps).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("systemPromptOverrides", () => {
+  let workspace: string;
+
+  beforeEach(() => { workspace = makeWorkspace(`sysprompt-${Date.now()}`); });
+  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+
+  it("uses the override prompt for the targeted role only", async () => {
+    const agentDir = join(workspace, ".agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "product.md"), "# P");
+    writeFileSync(join(agentDir, "architecture.md"), "# A");
+    writeFileSync(join(agentDir, "implementation-plan.md"), "# I");
+    writeFileSync(join(agentDir, "test-plan.md"), "# T");
+
+    const systemsSeen: Record<string, string> = {};
+    const createMessage: CreateMessageFn = async (params) => {
+      const last = params.messages[params.messages.length - 1];
+      const text = typeof last.content === "string" ? last.content : JSON.stringify(last.content);
+      const sys = typeof params.system === "string"
+        ? params.system
+        : (params.system ?? []).map((b) => b.text).join("\n");
+      if (text.includes("## State: IMPLEMENT")) systemsSeen.implementer = sys;
+      if (text.includes("## State: REVIEW")) systemsSeen.reviewer = sys;
+
+      let reply = "done";
+      if (text.includes("## State: TEST")) reply = "VERDICT: PASS";
+      if (text.includes("## State: REVIEW")) reply = "VERDICT: APPROVE";
+      if (text.includes("work unit")) reply = '[{"id":"wu-1","description":"main"}]';
+      return {
+        content: [{ type: "text", text: reply }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 5 },
+      };
+    };
+
+    const run = makeRun(workspace, createMessage, {
+      systemPromptOverrides: { implementer: "CUSTOM IMPLEMENTER PROMPT" },
+    });
+    await run.run();
+
+    expect(systemsSeen.implementer).toBe("CUSTOM IMPLEMENTER PROMPT");
+    expect(systemsSeen.reviewer ?? "").not.toBe("CUSTOM IMPLEMENTER PROMPT");
+  });
+});

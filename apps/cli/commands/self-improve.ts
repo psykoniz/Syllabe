@@ -79,12 +79,16 @@ export const selfImproveCommand = new Command("self-improve")
       runsPerTask: parseInt(opts.runs, 10),
       costCapUsd: parseFloat(opts.costCap),
     });
-    // Apply the candidate's loop bounds to the benchmark runs via env
-    // (eval tasks read PROJECTOS_LOOP_BOUNDS in _harness.ts)
+    // Apply the candidate config to the benchmark runs via env
+    // (eval tasks read PROJECTOS_LOOP_BOUNDS / PROJECTOS_SYSTEM_PROMPTS in _harness.ts)
     const prevBounds = process.env.PROJECTOS_LOOP_BOUNDS;
+    const prevPrompts = process.env.PROJECTOS_SYSTEM_PROMPTS;
     if (proposal.change.loopBounds) {
       const merged = { maxRepair: 3, maxReview: 2, ...proposal.change.loopBounds };
       process.env.PROJECTOS_LOOP_BOUNDS = JSON.stringify(merged);
+    }
+    if (proposal.change.systemPrompts) {
+      process.env.PROJECTOS_SYSTEM_PROMPTS = JSON.stringify(proposal.change.systemPrompts);
     }
     let candidateRun;
     try {
@@ -92,6 +96,8 @@ export const selfImproveCommand = new Command("self-improve")
     } finally {
       if (prevBounds === undefined) delete process.env.PROJECTOS_LOOP_BOUNDS;
       else process.env.PROJECTOS_LOOP_BOUNDS = prevBounds;
+      if (prevPrompts === undefined) delete process.env.PROJECTOS_SYSTEM_PROMPTS;
+      else process.env.PROJECTOS_SYSTEM_PROMPTS = prevPrompts;
     }
     const candidateScores = aggregateScores(candidateRun.result.scores);
 

@@ -33,6 +33,9 @@ export interface ProjectRunConfig {
   modelOverride?: string;
   /** Override state machine loop bounds (e.g. from a promoted candidate config) */
   loopBounds?: LoopBounds;
+  /** Per-role system prompt overrides (candidate config scope). Keyed by role
+   *  name (e.g. "reviewer"); replaces the generated prompt for that role. */
+  systemPromptOverrides?: Record<string, string>;
 }
 
 /** State → role mapping */
@@ -314,14 +317,16 @@ export class ProjectRun implements AgentHandler {
 
   private async callAgent(role: Role, prompt: string) {
     const model = this.cfg.modelOverride ?? resolveModel(role);
-    const system = buildSystemPrompt({
-      workspace: this.cfg.workspace,
-      branch: this.toolContext.branch?.(),
-      role: role === "implementer" || role === "test-engineer" ? "implementer"
-          : role === "architect" ? "architect"
-          : role === "reviewer" ? "reviewer"
-          : "product-strategist",
-    });
+    const system =
+      this.cfg.systemPromptOverrides?.[role] ??
+      buildSystemPrompt({
+        workspace: this.cfg.workspace,
+        branch: this.toolContext.branch?.(),
+        role: role === "implementer" || role === "test-engineer" ? "implementer"
+            : role === "architect" ? "architect"
+            : role === "reviewer" ? "reviewer"
+            : "product-strategist",
+      });
 
     const start = Date.now();
     const result = await runAgent(

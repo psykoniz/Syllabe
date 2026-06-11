@@ -238,3 +238,24 @@ describe("Frontier", () => {
     expect(f2.loadPromotions()[0].candidateId).toBe("cand-001");
   });
 });
+
+describe("HarnessOptimizer — escalated review failures target prompts", () => {
+  it("proposes a systemPrompts change when review cycles were already raised", () => {
+    const opt = new HarnessOptimizer();
+    const proposal = opt.propose([
+      { runId: "r1", state: "REVIEW", reason: "max review cycles (3) exceeded", count: 2 },
+    ]);
+    expect(proposal.change.systemPrompts?.implementer).toBeDefined();
+    expect(proposal.change.loopBounds).toBeUndefined();
+    expect(validateCandidateConfig(proposal.change)).toBe(true);
+  });
+
+  it("still proposes loopBounds when cycles are at the default", () => {
+    const opt = new HarnessOptimizer();
+    const proposal = opt.propose([
+      { runId: "r1", state: "REVIEW", reason: "max review cycles (2) exceeded", count: 2 },
+    ]);
+    expect(proposal.change.loopBounds?.maxReview).toBe(3);
+    expect(proposal.change.systemPrompts).toBeUndefined();
+  });
+});
