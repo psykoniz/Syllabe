@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
-const MODELS = [
+const ANTHROPIC_MODELS = [
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6  (fast, $3/M)" },
   { id: "claude-opus-4-8",   label: "Opus 4.8  (best, $5/M)" },
   { id: "claude-haiku-4-5",  label: "Haiku 4.5  (cheap, $1/M)" },
+];
+
+const OPENAI_MODELS = [
+  { id: "gpt-5.5",    label: "GPT-5.5  (latest)" },
+  { id: "gpt-4o",     label: "GPT-4o" },
+  { id: "gpt-4o-mini", label: "GPT-4o mini  (cheap)" },
 ];
 
 interface Props {
@@ -13,13 +19,21 @@ interface Props {
 
 export default function NewRunModal({ onClose }: Props) {
   const [task, setTask] = useState("");
-  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [provider, setProvider] = useState<"anthropic" | "openai">("openai");
+  const [model, setModel] = useState("gpt-5.5");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [autoYes, setAutoYes] = useState(true);
   const [sandbox, setSandbox] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
+
+  // Reset model when provider changes
+  useEffect(() => {
+    setModel(provider === "openai" ? "gpt-5.5" : "claude-sonnet-4-6");
+  }, [provider]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -33,14 +47,20 @@ export default function NewRunModal({ onClose }: Props) {
     setLoading(true);
     setError(null);
     try {
+      const body: Record<string, unknown> = { task: task.trim(), model, autoYes, sandbox };
+      if (provider === "openai") {
+        body.provider = "openai";
+        if (apiKey.trim()) body.apiKey = apiKey.trim();
+        if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
+      }
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: task.trim(), model, autoYes, sandbox }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const body = await res.json() as { error?: string };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
+        const data = await res.json() as { error?: string };
+        throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       const { runId } = await res.json() as { runId: string };
       onClose();
@@ -55,6 +75,8 @@ export default function NewRunModal({ onClose }: Props) {
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
   };
+
+  const models = provider === "openai" ? OPENAI_MODELS : ANTHROPIC_MODELS;
 
   return (
     <div
@@ -90,6 +112,33 @@ export default function NewRunModal({ onClose }: Props) {
             <p className="text-xs text-gray-600 mt-1">⌘ + Enter to launch</p>
           </div>
 
+          {/* Provider toggle */}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1.5">Provider</label>
+            <div className="flex items-center gap-1 bg-gray-950 border border-gray-700 rounded-lg p-1 w-fit">
+              <button
+                onClick={() => setProvider("openai")}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  provider === "openai"
+                    ? "bg-green-700 text-green-100"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                OpenAI
+              </button>
+              <button
+                onClick={() => setProvider("anthropic")}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  provider === "anthropic"
+                    ? "bg-blue-700 text-blue-100"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                Anthropic
+              </button>
+            </div>
+          </div>
+
           {/* Model */}
           <div>
             <label className="block text-xs font-medium text-gray-400 mb-1.5">Model</label>
@@ -98,11 +147,32 @@ export default function NewRunModal({ onClose }: Props) {
               onChange={(e) => setModel(e.target.value)}
               className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors"
             >
-              {MODELS.map((m) => (
+              {models.map((m) => (
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
           </div>
+
+          {/* OpenAI credentials (collapsible) */}
+          {provider === "openai" && (
+            <div className="space-y-2 bg-gray-950/50 border border-gray-800 rounded-lg px-3 py-3">
+              <p className="text-xs text-gray-500">Leave blank to use server env vars (OPENAI_API_KEY / OPENAI_BASE_URL)</p>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="API Key (optional)"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500/30 transition-colors font-mono"
+              />
+              <input
+                type="text"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="Base URL (optional, e.g. https://proxy.example.com)"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500/30 transition-colors"
+              />
+            </div>
+          )}
 
           {/* Options */}
           <div className="flex gap-6">

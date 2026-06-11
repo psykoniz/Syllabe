@@ -200,7 +200,15 @@ function writeApproval(runId: string, decision: "approve" | "deny"): void {
 }
 
 /** Launch a build in the background (detached process) */
-function spawnBuild(opts: { task: string; model?: string; autoYes?: boolean; sandbox?: boolean }): string {
+function spawnBuild(opts: {
+  task: string;
+  model?: string;
+  autoYes?: boolean;
+  sandbox?: boolean;
+  provider?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}): string {
   const { randomUUID } = require("crypto") as { randomUUID: () => string };
   const runId = randomUUID();
   const args = [
@@ -226,9 +234,13 @@ function spawnBuild(opts: { task: string; model?: string; autoYes?: boolean; san
     }
   }
 
-  // Bun.spawn with detached=false — runs in background relative to the HTTP request
+  const extraEnv: Record<string, string> = { PROJECTOS_RUN_ID: runId };
+  if (opts.provider) extraEnv.PROJECTOS_PROVIDER = opts.provider;
+  if (opts.apiKey)   extraEnv.OPENAI_API_KEY = opts.apiKey;
+  if (opts.baseUrl)  extraEnv.OPENAI_BASE_URL = opts.baseUrl;
+
   Bun.spawn(args, {
-    env: { ...process.env, PROJECTOS_RUN_ID: runId },
+    env: { ...process.env, ...extraEnv },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -277,6 +289,9 @@ Bun.serve({
           model?: string;
           autoYes?: boolean;
           sandbox?: boolean;
+          provider?: string;
+          apiKey?: string;
+          baseUrl?: string;
         };
         if (!body.task?.trim()) return json({ error: "task is required" }, 400);
         const runId = spawnBuild(body);
