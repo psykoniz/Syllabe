@@ -4,7 +4,11 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { Database } from "bun:sqlite";
 import { ProjectRun, defaultCreateMessage } from "@projectos/core";
+<<<<<<< HEAD
 import { ensureRunMetaTable, setRunMeta, loadPromotedConfig } from "@projectos/core";
+=======
+import { ensureRunMetaTable, setRunMeta } from "@projectos/core";
+>>>>>>> origin/main
 import { autoApprove, interactiveApproval } from "@projectos/policy";
 
 export const buildCommand = new Command("build")
@@ -19,8 +23,11 @@ export const buildCommand = new Command("build")
   .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .option("--browser-tools", "Enable Playwright browser automation tools", false)
+<<<<<<< HEAD
   .option("--parallel <n>", "Run work units concurrently with this concurrency (>=2 enables)", "0")
   .option("--harness-dir <path>", "Harness dir with promoted config (promotions.json)", "~/.projectos/harness")
+=======
+>>>>>>> origin/main
   .action(async (opts) => {
     // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
     // run id so it can track the run it just launched.
@@ -57,6 +64,7 @@ export const buildCommand = new Command("build")
       autoYes: opts.yes,
       maxIterationsPerState: parseInt(opts.maxIterations, 10),
       modelOverride: opts.modelOverride,
+<<<<<<< HEAD
       loopBounds: promoted.loopBounds
         ? { maxRepair: 3, maxReview: 2, ...promoted.loopBounds }
         : undefined,
@@ -65,6 +73,11 @@ export const buildCommand = new Command("build")
       sandboxImage: opts.sandboxImage,
       browserTools: opts.browserTools,
       parallelWorkUnits: parseInt(opts.parallel, 10) || undefined,
+=======
+      sandbox: opts.sandbox,
+      sandboxImage: opts.sandboxImage,
+      browserTools: opts.browserTools,
+>>>>>>> origin/main
     });
 
     try {
