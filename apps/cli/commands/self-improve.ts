@@ -23,9 +23,12 @@ export const selfImproveCommand = new Command("self-improve")
     console.log(`Baseline:    ${opts.baseline}`);
     console.log(`Harness dir: ${harnessDir}\n`);
 
-    // ── 1. Collect failure patterns from run records ──────────────────────────
+    // ── 1. Collect failure patterns from run records + baseline scores ──────────
 
-    const patterns = collectFailurePatterns(opts.runsDir);
+    const patterns = [
+      ...collectFailurePatterns(opts.runsDir),
+      ...collectFailurePatternsFromBaseline(opts.baseline),
+    ];
     console.log(`Collected ${patterns.length} failure pattern(s).`);
     if (patterns.length > 0) {
       for (const p of patterns.slice(0, 5)) {
@@ -156,6 +159,36 @@ function collectFailurePatterns(runsDir: string): FailurePattern[] {
       }
     }
     return Array.from(counts.values());
+  } catch {
+    return [];
+  }
+}
+
+/** Derive failure patterns from baseline scores (0% pass rate = failure) */
+function collectFailurePatternsFromBaseline(baselinePath: string): FailurePattern[] {
+  if (!existsSync(baselinePath)) return [];
+  try {
+    const store = JSON.parse(readFileSync(baselinePath, "utf8")) as Array<{
+      version: number;
+      scores: Array<{ taskId: string; passRate: number; runs: Array<{ notes: string }> }>;
+    }>;
+    const latest = store[store.length - 1];
+    if (!latest) return [];
+
+    return latest.scores
+      .filter((s) => s.passRate === 0)
+      .map((s) => {
+        // Extract escalation reason from run notes if available
+        const note = s.runs?.[0]?.notes ?? "";
+        const escalationMatch = /escalation=(.+)/.exec(note);
+        const reason = escalationMatch ? escalationMatch[1] : `task failed: ${s.taskId}`;
+        return {
+          runId: `baseline-v${latest.version}`,
+          state: "REVIEW",
+          reason,
+          count: s.runs?.length ?? 1,
+        };
+      });
   } catch {
     return [];
   }
