@@ -19,7 +19,8 @@
       "@projectos/agents": ["packages/agents/index.ts"],
       "@projectos/memory": ["packages/memory/index.ts"],
       "@projectos/evals": ["packages/evals/index.ts"],
-      "@projectos/sandbox": ["packages/sandbox/src/index.ts"]
+      "@projectos/sandbox": ["packages/sandbox/src/index.ts"],
+      "@projectos/playwright-tools": ["packages/playwright-tools/src/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],

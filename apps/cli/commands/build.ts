@@ -18,6 +18,7 @@ export const buildCommand = new Command("build")
   .option("--model-override <id>", "Force all role calls to use this model (e.g. claude-sonnet-4-6)")
   .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
+  .option("--browser-tools", "Enable Playwright browser automation tools", false)
   .action(async (opts) => {
     const runId = randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
@@ -46,6 +47,7 @@ export const buildCommand = new Command("build")
       modelOverride: opts.modelOverride,
       sandbox: opts.sandbox,
       sandboxImage: opts.sandboxImage,
+      browserTools: opts.browserTools,
     });
 
     try {

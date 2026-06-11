@@ -10,6 +10,7 @@ import { appendTrace } from "@projectos/telemetry";
 import { FsTools, BashTool, GitTools, TOOL_DEFINITIONS } from "@projectos/tools";
 import type { ToolContext } from "@projectos/tools";
 import { DockerSandbox, SandboxedBash } from "@projectos/sandbox";
+import { BrowserSession, dispatchPlaywrightTool, PLAYWRIGHT_TOOL_DEFINITIONS } from "@projectos/playwright-tools";
 import { PermissionEngine } from "@projectos/policy";
 import type { ApprovalHandler } from "@projectos/policy";
 import { resolveModel } from "@projectos/router";
@@ -42,6 +43,8 @@ export interface ProjectRunConfig {
   sandbox?: boolean;
   /** Docker image to use when sandbox is enabled (default: node:20-alpine) */
   sandboxImage?: string;
+  /** Enable Playwright browser tools (navigate, click, fill, extract, screenshot, eval) */
+  browserTools?: boolean;
 }
 
 /** State → role mapping */
@@ -61,6 +64,7 @@ const STATE_ROLE: Partial<Record<State, Role>> = {
 export class ProjectRun implements AgentHandler {
   private agentDir: string;
   private toolContext: ToolContext;
+  private browserSession: BrowserSession | null = null;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -328,6 +332,19 @@ export class ProjectRun implements AgentHandler {
       });
 
     const start = Date.now();
+
+    // Lazy-init browser session when browser tools are enabled
+    if (this.cfg.browserTools && !this.browserSession) {
+      const logPath = join(this.cfg.workspace, ".projectos", "tool-calls.jsonl");
+      this.browserSession = new BrowserSession({ logPath });
+    }
+
+    const extraTools = this.cfg.browserTools ? PLAYWRIGHT_TOOL_DEFINITIONS : [];
+    const extraDispatcher = this.cfg.browserTools && this.browserSession
+      ? (name: string, input: Record<string, unknown>) =>
+          dispatchPlaywrightTool(name, input, this.browserSession!)
+      : undefined;
+
     const result = await runAgent(
       [{ role: "user", content: prompt }],
       {
@@ -335,8 +352,10 @@ export class ProjectRun implements AgentHandler {
         model,
         system,
         toolContext: this.toolContext,
+        tools: extraTools.length > 0 ? [...TOOL_DEFINITIONS, ...extraTools] : undefined,
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
+        extraDispatcher,
       }
     );
 
@@ -375,11 +394,16 @@ export class ProjectRun implements AgentHandler {
 
   async run(): Promise<LoopResult> {
     const ctx = makeContext([], this.cfg.loopBounds);
-    return runAgentLoop(ctx, {
-      runId: this.cfg.runId,
-      db: this.cfg.db,
-      handler: this,
-    });
+    try {
+      return await runAgentLoop(ctx, {
+        runId: this.cfg.runId,
+        db: this.cfg.db,
+        handler: this,
+      });
+    } finally {
+      await this.browserSession?.close();
+      this.browserSession = null;
+    }
   }
 }
 

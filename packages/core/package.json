@@ -6,6 +6,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
     "@projectos/memory": "*",
-    "@projectos/sandbox": "*"
+    "@projectos/sandbox": "*",
+    "@projectos/playwright-tools": "*"
   }
 }
