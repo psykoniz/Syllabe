@@ -76,6 +76,19 @@ export interface TurnInfo {
   toolCalls: string[];
 }
 
+export interface CompactionOptions {
+  /** Compact when the serialized `messages` exceed this many characters */
+  maxChars: number;
+  /** Number of trailing turns (assistant + tool-result pairs) kept intact */
+  keepLastTurns: number;
+}
+
+/** ~80k tokens at 4 chars/token */
+export const DEFAULT_COMPACTION: CompactionOptions = {
+  maxChars: 320_000,
+  keepLastTurns: 6,
+};
+
 export interface AgentRunnerOptions {
   createMessage: CreateMessageFn;
   model: string;
@@ -88,6 +101,8 @@ export interface AgentRunnerOptions {
   /** Max characters of a single tool result fed back to the model (default 16000) */
   maxToolResultChars?: number;
   maxTokensPerTurn?: number;
+  /** Context compaction policy. Defaults to DEFAULT_COMPACTION (~80k tokens). */
+  compaction?: CompactionOptions;
   onTurn?: (info: TurnInfo) => void;
   /** Async tool dispatcher for extended tool sets (e.g. playwright).
    *  Called first; falls through to the default dispatchTool when it returns null. */
@@ -214,6 +229,49 @@ function truncateResult(content: string, maxChars = 16000): string {
   );
 }
 
+// ─── Context compaction ──────────────────────────────────────────────────────
+
+const COMPACT_BLOCK_MAX_CHARS = 200;
+
+/** Shrink an old message without breaking tool_use/tool_result pairing:
+ *  every block keeps its position and ids — only content strings shrink. */
+function compactMessage(msg: MessageParam): MessageParam {
+  if (typeof msg.content === "string") {
+    if (msg.role === "assistant" && msg.content.length > COMPACT_BLOCK_MAX_CHARS) {
+      return { ...msg, content: msg.content.slice(0, COMPACT_BLOCK_MAX_CHARS) };
+    }
+    return msg;
+  }
+  const content = msg.content.map((block) => {
+    if (block.type === "tool_result" && block.content.length > COMPACT_BLOCK_MAX_CHARS) {
+      // Keep tool_use_id and position; only the content string is replaced.
+      return { ...block, content: `[tool result omitted: ${block.content.length} chars]` };
+    }
+    if (block.type === "text" && block.text.length > COMPACT_BLOCK_MAX_CHARS) {
+      return { ...block, text: block.text.slice(0, COMPACT_BLOCK_MAX_CHARS) };
+    }
+    return block;
+  });
+  return { ...msg, content };
+}
+
+/** If the serialized history exceeds maxChars, shrink older messages:
+ *  - messages[0] (the task) stays intact
+ *  - the last keepLastTurns*2 messages stay intact
+ *  - in between, long tool results become one-line summaries and long
+ *    text blocks are truncated; tool_use/tool_result pairing is preserved. */
+export function compactMessages(
+  messages: MessageParam[],
+  opts: CompactionOptions
+): MessageParam[] {
+  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  const keepTail = opts.keepLastTurns * 2;
+  const tailStart = Math.max(1, messages.length - keepTail);
+  return messages.map((msg, i) =>
+    i === 0 || i >= tailStart ? msg : compactMessage(msg)
+  );
+}
+
 function textOf(content: ContentBlock[]): string {
   return content
     .filter((b): b is TextBlock => b.type === "text")
@@ -247,7 +305,14 @@ export async function runAgent(
     ? [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }]
     : undefined;
 
+  const compaction = opts.compaction ?? DEFAULT_COMPACTION;
+
   for (let turn = 1; turn <= maxIterations; turn++) {
+    const compacted = compactMessages(messages, compaction);
+    if (compacted !== messages) {
+      messages.splice(0, messages.length, ...compacted);
+    }
+
     const response = await opts.createMessage({
       model: opts.model,
       max_tokens: opts.maxTokensPerTurn ?? 8192,
