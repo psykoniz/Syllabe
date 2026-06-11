@@ -23,6 +23,8 @@ export default function NewRunModal({ onClose }: Props) {
   const [model, setModel] = useState("gpt-5.5");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://codex-everywhere.com");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [baseBranch, setBaseBranch] = useState("main");
   const [autoYes, setAutoYes] = useState(true);
   const [sandbox, setSandbox] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -48,6 +50,10 @@ export default function NewRunModal({ onClose }: Props) {
     setError(null);
     try {
       const body: Record<string, unknown> = { task: task.trim(), model, autoYes, sandbox };
+      if (repoUrl.trim()) {
+        body.repoUrl = repoUrl.trim();
+        body.baseBranch = baseBranch.trim() || "main";
+      }
       if (provider === "openai") {
         body.provider = "openai";
         if (apiKey.trim()) body.apiKey = apiKey.trim();
@@ -110,6 +116,30 @@ export default function NewRunModal({ onClose }: Props) {
               className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 resize-none transition-colors"
             />
             <p className="text-xs text-gray-600 mt-1">⌘ + Enter to launch</p>
+          </div>
+
+          {/* Existing repository */}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1.5">Repository (optional)</label>
+            <input
+              type="text"
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.target.value)}
+              placeholder="https://github.com/org/repo.git or /abs/local/path — leave blank for empty workspace"
+              className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors font-mono"
+            />
+            {repoUrl.trim() && (
+              <div className="mt-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">Base branch</label>
+                <input
+                  type="text"
+                  value={baseBranch}
+                  onChange={(e) => setBaseBranch(e.target.value)}
+                  className="w-40 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors font-mono"
+                />
+                <p className="text-xs text-gray-600 mt-1">Credentials in the URL are used for cloning only and never stored.</p>
+              </div>
+            )}
           </div>
 
           {/* Provider toggle */}

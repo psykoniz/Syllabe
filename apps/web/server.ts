@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
+import { validateRepoParams, redactGitUrl } from "./validate";
 
 const PORT = parseInt(process.env.PORT ?? "4321", 10);
 const DB_PATH = process.env.PROJECTOS_DB_PATH ?? join(process.cwd(), ".projectos", "runs.db");
@@ -82,7 +83,10 @@ function listRuns(): Array<RunRow & { task?: string }> {
   }
 }
 
-function getRunDetail(runId: string): { run: (RunRow & { task?: string }) | null; checkpoints: RunRow[] } {
+function getRunDetail(runId: string): {
+  run: (RunRow & { task?: string; git_url?: string; base_branch?: string; work_branch?: string }) | null;
+  checkpoints: RunRow[];
+} {
   const db = openDb();
   if (!db) return { run: null, checkpoints: [] };
   try {
@@ -105,7 +109,16 @@ function getRunDetail(runId: string): { run: (RunRow & { task?: string }) | null
 
     if (!run) return { run: null, checkpoints };
     const meta = getRunMeta(db, runId);
-    return { run: { ...run, task: meta.task }, checkpoints };
+    return {
+      run: {
+        ...run,
+        task: meta.task,
+        git_url: meta.git_url,
+        base_branch: meta.base_branch,
+        work_branch: meta.work_branch,
+      },
+      checkpoints,
+    };
   } catch {
     return { run: null, checkpoints: [] };
   } finally {
@@ -208,17 +221,24 @@ function spawnBuild(opts: {
   provider?: string;
   apiKey?: string;
   baseUrl?: string;
+  repoUrl?: string;
+  baseBranch?: string;
 }): string {
   const { randomUUID } = require("crypto") as { randomUUID: () => string };
   const runId = randomUUID();
+  const baseBranch = opts.baseBranch?.trim() || "main";
+  const workBranch = opts.repoUrl ? `projectos/run-${runId.slice(0, 8)}` : undefined;
 
   // Isolated workspace per run — the agent must never write into the
-  // ProjectOS repo itself. Initialized as a git repo for commit tooling.
+  // ProjectOS repo itself. For empty-workspace runs, initialized as a git
+  // repo for commit tooling; for repo runs, the run itself clones into it.
   const workspace = join(process.cwd(), ".projectos", "workspaces", runId);
   mkdirSync(workspace, { recursive: true });
-  spawnSync("git", ["init", "-q"], { cwd: workspace });
-  spawnSync("git", ["config", "user.email", "agent@projectos"], { cwd: workspace });
-  spawnSync("git", ["config", "user.name", "ProjectOS Agent"], { cwd: workspace });
+  if (!opts.repoUrl) {
+    spawnSync("git", ["init", "-q"], { cwd: workspace });
+    spawnSync("git", ["config", "user.email", "agent@projectos"], { cwd: workspace });
+    spawnSync("git", ["config", "user.name", "ProjectOS Agent"], { cwd: workspace });
+  }
 
   const args = [
     "bun", CLI_PATH, "build",
@@ -230,6 +250,7 @@ function spawnBuild(opts: {
   if (opts.model) args.push("--model-override", opts.model);
   if (opts.autoYes) args.push("--yes");
   if (opts.sandbox) args.push("--sandbox");
+  if (opts.repoUrl) args.push("--repo", opts.repoUrl, "--base-branch", baseBranch);
 
   // Write run_meta before spawning so the UI can show the task immediately
   const db = openDbRw();
@@ -240,6 +261,11 @@ function spawnBuild(opts: {
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'model', ?)`, [runId, opts.model ?? "default"]);
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'startedAt', ?)`, [runId, new Date().toISOString()]);
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'workspace', ?)`, [runId, workspace]);
+      if (opts.repoUrl) {
+        db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'git_url', ?)`, [runId, redactGitUrl(opts.repoUrl)]);
+        db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'base_branch', ?)`, [runId, baseBranch]);
+        db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'work_branch', ?)`, [runId, workBranch!]);
+      }
     } finally {
       db.close();
     }
@@ -303,8 +329,12 @@ Bun.serve({
           provider?: string;
           apiKey?: string;
           baseUrl?: string;
+          repoUrl?: string;
+          baseBranch?: string;
         };
         if (!body.task?.trim()) return json({ error: "task is required" }, 400);
+        const validation = validateRepoParams(body.repoUrl, body.baseBranch);
+        if (!validation.ok) return json({ error: validation.error }, 400);
         const runId = spawnBuild(body);
         return json({ runId }, 202);
       } catch (e) {
@@ -342,6 +372,51 @@ Bun.serve({
       const traces = readTraces(runId);
       const cost = computeCostFromTraces(traces);
       return json({ run, checkpoints, traces, cost });
+    }
+
+    // GET /api/runs/:id/diff — changes made by a repo-backed run
+    const diffMatch = pathname.match(/^\/api\/runs\/([^/]+)\/diff$/);
+    if (diffMatch && req.method === "GET") {
+      const runId = diffMatch[1];
+      const db = openDb();
+      const meta = db ? getRunMeta(db, runId) : {};
+      db?.close();
+
+      const empty = {
+        baseBranch: meta.base_branch ?? null,
+        workBranch: meta.work_branch ?? null,
+        baseSha: meta.base_sha ?? null,
+        diff: "",
+        stat: "",
+        truncated: false,
+      };
+      const workspace = meta.workspace;
+      if (!meta.git_url || !workspace || !existsSync(join(workspace, ".git"))) {
+        return json(empty);
+      }
+
+      const base = meta.base_sha || meta.base_branch || "main";
+      const MAX_DIFF = 1024 * 1024; // 1 MB
+      const runGit = (args: string[]) =>
+        spawnSync("git", args, { cwd: workspace, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+
+      const diffProc = runGit(["diff", `${base}..HEAD`]);
+      const statProc = runGit(["diff", "--stat", `${base}..HEAD`]);
+      if (diffProc.status !== 0) {
+        return json({ ...empty, diff: "", stat: "" });
+      }
+      let diff = diffProc.stdout ?? "";
+      const truncated = diff.length > MAX_DIFF;
+      if (truncated) diff = diff.slice(0, MAX_DIFF);
+
+      return json({
+        baseBranch: meta.base_branch ?? null,
+        workBranch: meta.work_branch ?? null,
+        baseSha: meta.base_sha ?? null,
+        diff,
+        stat: (statProc.stdout ?? "").trimEnd(),
+        truncated,
+      });
     }
 
     // GET /api/runs/:id/events — SSE tail

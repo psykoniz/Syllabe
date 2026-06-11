@@ -18,6 +18,8 @@ import type { ApprovalHandler } from "@projectos/policy";
 import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
+import { buildRepoContext, buildRepoTree } from "./repo-context";
+import { ensureRunMetaTable, setRunMeta } from "./session-db";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, EffortLevel } from "./agent-runner";
 import { spawnSync } from "child_process";
@@ -50,7 +52,27 @@ export interface ProjectRunConfig {
   /** Run work units concurrently with this concurrency (≥2 enables parallel
    *  mode; each unit runs its own implement→test⇄repair→review pipeline). */
   parallelWorkUnits?: number;
+  /** Existing repository to work on (URL or local path). When set, the run
+   *  clones it into the workspace and works on a dedicated branch. */
+  gitUrl?: string;
+  /** Base branch to clone from (default "main") */
+  baseBranch?: string;
+  /** Branch the run works on (default `projectos/run-<runId8>`) */
+  workBranch?: string;
 }
+
+/** Framing prepended to the repo context so it never expands the task scope. */
+const REPO_CONTEXT_FRAMING =
+  "### Existing codebase\n" +
+  "You are MODIFYING an existing repository, not creating a new project. The repo below is " +
+  "context only — it does NOT expand the task scope. Implement exactly what the task brief " +
+  "asks, following this codebase's existing conventions, file layout, and tooling. Do not " +
+  "refactor, rewrite, or 'improve' unrelated code. Blueprint files still go in the .agent/ " +
+  "directory as instructed.";
+
+const EXISTING_REPO_INSTRUCTION =
+  "This is an existing repository — locate the right files with the file tree above and " +
+  "modify in place; run the project's own test command.";
 
 /** Reasoning effort per role: max only where deep reflection pays off.
  *  CLARIFY (product-strategist) is mostly mechanical — high is enough. */
@@ -78,6 +100,8 @@ export class ProjectRun implements AgentHandler {
   private agentDir: string;
   private toolContext: ToolContext;
   private browserSession: BrowserSession | null = null;
+  private repoContext: string | null = null;
+  private repoTree: string | null = null;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -107,6 +131,65 @@ export class ProjectRun implements AgentHandler {
         return (r.stdout ?? "").trim();
       },
     };
+  }
+
+  // ─── Existing-repo setup ───────────────────────────────────────────────────
+
+  /** Clone the configured repository into the workspace, record the base SHA
+   *  and switch to the dedicated work branch. No-op when gitUrl is unset. */
+  private setupRepo(): void {
+    if (!this.cfg.gitUrl) return;
+
+    const baseBranch = this.cfg.baseBranch ?? "main";
+    const workBranch =
+      this.cfg.workBranch ?? `projectos/run-${this.cfg.runId.slice(0, 8)}`;
+
+    GitTools.clone(this.cfg.gitUrl, this.cfg.workspace, baseBranch);
+
+    // Ensure commits made by the agent have an identity in this clone
+    const hasIdentity = spawnSync("git", ["config", "user.email"], {
+      cwd: this.cfg.workspace, encoding: "utf8",
+    }).status === 0;
+    if (!hasIdentity) {
+      spawnSync("git", ["config", "user.email", "agent@projectos"], { cwd: this.cfg.workspace });
+      spawnSync("git", ["config", "user.name", "ProjectOS Agent"], { cwd: this.cfg.workspace });
+    }
+
+    const baseSha = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: this.cfg.workspace, encoding: "utf8",
+    }).stdout?.trim() ?? "";
+
+    writeFileSync(
+      join(this.agentDir, "repo.json"),
+      JSON.stringify({ base_sha: baseSha, base_branch: baseBranch, work_branch: workBranch }, null, 2),
+      "utf8"
+    );
+    try {
+      ensureRunMetaTable(this.cfg.db);
+      setRunMeta(this.cfg.db, this.cfg.runId, "base_sha", baseSha);
+    } catch {
+      // run_meta is best-effort — .agent/repo.json is the source of truth
+    }
+
+    new GitTools({
+      logPath: join(this.cfg.workspace, ".projectos", "tool-calls.jsonl"),
+      repoPath: this.cfg.workspace,
+    }).createBranch(workBranch);
+
+    this.repoContext = buildRepoContext(this.cfg.workspace);
+    this.repoTree = buildRepoTree(this.cfg.workspace);
+  }
+
+  /** Full repo context (tree + README + conventions) with scope framing. */
+  private framedRepoContext(): string | null {
+    if (!this.repoContext) return null;
+    return `${REPO_CONTEXT_FRAMING}\n\n${this.repoContext}`;
+  }
+
+  /** Tree-only repo context with a one-line instruction, for PLAN/IMPLEMENT. */
+  private framedRepoTree(): string | null {
+    if (!this.repoTree) return null;
+    return `### Existing codebase\n${this.repoTree}\n\n${EXISTING_REPO_INSTRUCTION}`;
   }
 
   // ─── AgentHandler ──────────────────────────────────────────────────────────
@@ -179,7 +262,7 @@ export class ProjectRun implements AgentHandler {
       : "";
 
     const prompt = buildStatePrompt("DESIGN", this.cfg.task, {
-      context: interviewContent,
+      context: [interviewContent, this.framedRepoContext()].filter(Boolean).join("\n\n"),
       instructions: [
         "SCOPE RULE — the task description above is the single source of truth for scope.",
         "The interview answers are generic defaults: apply them ONLY where the task actually",
@@ -256,6 +339,7 @@ export class ProjectRun implements AgentHandler {
     return {
       implement: async (wu) => {
         const prompt = buildStatePrompt("IMPLEMENT", task, {
+          context: this.framedRepoTree() ?? undefined,
           instructions: [
             `Work unit (parallel, 1 of ${totalUnits}): **${wu.description}**`,
             "",
@@ -318,6 +402,7 @@ export class ProjectRun implements AgentHandler {
     if (!wu) return { type: "IMPLEMENT_DONE" };
 
     const prompt = buildStatePrompt("IMPLEMENT", this.cfg.task, {
+      context: this.framedRepoTree() ?? undefined,
       instructions: [
         `Work unit ${ctx.workUnitIndex + 1}/${ctx.workUnits.length}: **${wu.description}**`,
         "",
@@ -508,6 +593,7 @@ export class ProjectRun implements AgentHandler {
   // ─── Entry point ───────────────────────────────────────────────────────────
 
   async run(): Promise<LoopResult> {
+    this.setupRepo();
     const ctx = makeContext([], this.cfg.loopBounds);
     try {
       return await runAgentLoop(ctx, {
