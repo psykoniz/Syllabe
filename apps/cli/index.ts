@@ -5,6 +5,7 @@ import { resumeCommand } from "./commands/resume";
 import { reportCommand } from "./commands/report";
 import { buildCommand } from "./commands/build";
 import { evalCommand } from "./commands/eval";
+import { selfImproveCommand } from "./commands/self-improve";
 
 const program = new Command("projectos")
   .version("0.0.1")
@@ -15,5 +16,6 @@ program.addCommand(resumeCommand);
 program.addCommand(reportCommand);
 program.addCommand(buildCommand);
 program.addCommand(evalCommand);
+program.addCommand(selfImproveCommand);
 
 program.parse(process.argv);
