@@ -130,6 +130,12 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
 ];
 
+/** Resolve a model-supplied path against the workspace if it is relative. */
+function resolvePath(p: string, workspace: string): string {
+  const { resolve, isAbsolute } = require("path");
+  return isAbsolute(p) ? p : resolve(workspace, p);
+}
+
 export function dispatchTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -138,25 +144,31 @@ export function dispatchTool(
   try {
     switch (toolName) {
       case "read_file":
-        return ok(ctx.fs.read(input.path as string));
+        return ok(ctx.fs.read(resolvePath(input.path as string, ctx.workspace)));
 
       case "write_file":
-        ctx.fs.write(input.path as string, input.content as string, {
+        ctx.fs.write(resolvePath(input.path as string, ctx.workspace), input.content as string, {
           overwrite: (input.overwrite as boolean) ?? false,
         });
         return ok("ok");
 
       case "edit_file":
-        ctx.fs.edit(input.path as string, input.old_string as string, input.new_string as string);
+        ctx.fs.edit(
+          resolvePath(input.path as string, ctx.workspace),
+          input.old_string as string,
+          input.new_string as string
+        );
         return ok("ok");
 
       case "glob_files": {
-        const dir = (input.dir as string) ?? ctx.workspace;
+        const dir = input.dir ? resolvePath(input.dir as string, ctx.workspace) : ctx.workspace;
         return ok(JSON.stringify(ctx.fs.glob(input.pattern as string, dir)));
       }
 
-      case "grep_files":
-        return ok(JSON.stringify(ctx.fs.grep(input.pattern as string, input.files as string[])));
+      case "grep_files": {
+        const files = (input.files as string[]).map((f) => resolvePath(f, ctx.workspace));
+        return ok(JSON.stringify(ctx.fs.grep(input.pattern as string, files)));
+      }
 
       case "bash": {
         const r = ctx.bash.run(input.command as string);
