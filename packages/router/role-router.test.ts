@@ -14,14 +14,14 @@ describe("RoleRouter.route", () => {
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("routes architect to fable without fallback", () => {
+  it("routes architect to opus without fallback", () => {
     const r = makeRouter().route("architect");
-    expect(r.modelId).toBe(MODEL_IDS.fable);
+    expect(r.modelId).toBe(MODEL_IDS.opus);
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("routes harness-optimizer analysis to fable", () => {
-    expect(makeRouter().route("harness-optimizer", "analysis").modelId).toBe(MODEL_IDS.fable);
+  it("routes harness-optimizer analysis to opus", () => {
+    expect(makeRouter().route("harness-optimizer", "analysis").modelId).toBe(MODEL_IDS.opus);
   });
 
   it("routes harness-optimizer implementation to sonnet", () => {
@@ -56,7 +56,7 @@ describe("RoleRouter.handleModelError — decision roles escalate", () => {
     const escalations: EscalationEvent[] = [];
     const r = makeRouter(escalations).handleModelError("architect", "model down");
     expect(r.fallbackUsed).toBe(false);
-    expect(r.modelId).toBe(MODEL_IDS.fable); // original preserved
+    expect(r.modelId).toBe(MODEL_IDS.opus); // original preserved
     expect(escalations).toHaveLength(1);
     expect(escalations[0].role).toBe("architect");
     expect(escalations[0].reason).toBe("model down");
