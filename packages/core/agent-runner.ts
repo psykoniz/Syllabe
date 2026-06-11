@@ -12,6 +12,10 @@ import type { ApprovalHandler, ToolRequest } from "@projectos/policy";
 export interface ChatUsage {
   input_tokens: number;
   output_tokens: number;
+  /** Tokens served from the prompt cache (returned by the API when caching is active) */
+  cache_read_input_tokens?: number;
+  /** Tokens written to the prompt cache (returned by the API when caching is active) */
+  cache_creation_input_tokens?: number;
 }
 
 export interface TextBlock {
@@ -96,7 +100,12 @@ export interface AgentRunnerOptions {
 export interface AgentRunResult {
   finalText: string;
   messages: MessageParam[];
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  };
   turns: number;
   stopReason: "end_turn" | "max_iterations" | string;
 }
@@ -222,6 +231,8 @@ export async function runAgent(
   const maxIterations = opts.maxIterations ?? 50;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   let finalText = "";
 
   // Prompt caching: mark the static prefix (tools + system) as cacheable so
@@ -247,6 +258,8 @@ export async function runAgent(
 
     inputTokens += response.usage.input_tokens;
     outputTokens += response.usage.output_tokens;
+    cacheReadTokens += response.usage.cache_read_input_tokens ?? 0;
+    cacheWriteTokens += response.usage.cache_creation_input_tokens ?? 0;
     messages.push({ role: "assistant", content: response.content });
 
     const toolUses = response.content.filter(
@@ -265,7 +278,7 @@ export async function runAgent(
       return {
         finalText,
         messages,
-        usage: { inputTokens, outputTokens },
+        usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
         turns: turn,
         stopReason: response.stop_reason ?? "end_turn",
       };
@@ -281,7 +294,7 @@ export async function runAgent(
   return {
     finalText,
     messages,
-    usage: { inputTokens, outputTokens },
+    usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
     turns: maxIterations,
     stopReason: "max_iterations",
   };

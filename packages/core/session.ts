@@ -84,6 +84,9 @@ export async function defaultCreateMessage(): Promise<CreateMessageFn> {
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        // The SDK response is passed through structurally — `usage` keeps
+        // cache_read_input_tokens / cache_creation_input_tokens when the
+        // provider returns them (see ChatUsage in agent-runner.ts).
         return await client.messages.create(params as never) as unknown as ReturnType<CreateMessageFn>;
       } catch (e: unknown) {
         const status = (e as { status?: number }).status;
