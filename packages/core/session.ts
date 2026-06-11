@@ -10,6 +10,8 @@ import { setHarnessApiKey } from "@projectos/policy";
 import type { ApprovalHandler } from "@projectos/policy";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, MessageParam, AgentRunResult } from "./agent-runner";
+import { buildSystemPrompt } from "./system-prompt";
+import type { SystemPromptOptions } from "./system-prompt";
 
 export interface SessionConfig {
   model: string;
@@ -18,7 +20,11 @@ export interface SessionConfig {
   tracePath: string;
   toolLogPath?: string;       // default: <dir of dbPath>/tool-calls.jsonl
   sessionsDir?: string;       // default: <dir of dbPath>/sessions
+  /** Override the auto-generated system prompt entirely */
   system?: string;
+  /** Passed to buildSystemPrompt if system is not overridden */
+  role?: SystemPromptOptions["role"];
+  memoryContext?: string;
   approval?: ApprovalHandler;
   maxIterations?: number;
   /** Injectable for tests; defaults to the real Anthropic client.
@@ -126,11 +132,21 @@ export class ProjectSession {
     const start = Date.now();
     const createMessage = await this.getCreateMessage();
 
+    const toolContext = this.buildToolContext();
+    const system =
+      this.config.system ??
+      buildSystemPrompt({
+        workspace: this.config.workspace,
+        branch: toolContext.branch?.(),
+        role: this.config.role,
+        memoryContext: this.config.memoryContext,
+      });
+
     const result = await runAgent(messages, {
       createMessage,
       model: this.config.model,
-      system: this.config.system,
-      toolContext: this.buildToolContext(),
+      system,
+      toolContext: toolContext,
       approval: this.config.approval,
       maxIterations: this.config.maxIterations,
     });
