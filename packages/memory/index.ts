@@ -8,3 +8,5 @@ export { SkillStore } from "./skill-store";
 export type { Skill } from "./skill-store";
 export { ProjectMemory, assembleContext } from "./project-memory";
 export type { ProjectMemoryData, MemoryBlocks } from "./project-memory";
+export { GlobalMemory, projectKeyFor } from "./global-memory";
+export type { GlobalMemoryOptions } from "./global-memory";
