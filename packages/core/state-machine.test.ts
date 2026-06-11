@@ -40,6 +40,11 @@ describe("happy path transitions", () => {
     expect(transition(ctx, { type: "IMPLEMENT_DONE" }).state).toBe("IMPLEMENT");
   });
 
+  it("PLAN → DOCUMENT when allUnitsComplete (parallel mode)", () => {
+    const ctx: RunContext = { ...makeContext(), state: "PLAN", workUnits: wu };
+    expect(transition(ctx, { type: "IMPLEMENT_DONE", allUnitsComplete: true }).state).toBe("DOCUMENT");
+  });
+
   it("IMPLEMENT → TEST on IMPLEMENT_DONE", () => {
     const ctx: RunContext = { ...makeContext(), state: "IMPLEMENT" };
     expect(transition(ctx, { type: "IMPLEMENT_DONE" }).state).toBe("TEST");

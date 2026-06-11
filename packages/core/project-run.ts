@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runAgentLoop } from "./agent-loop";
 import { makeContext } from "./state-machine";
+import { runWorkUnitsParallel } from "./parallel-runner";
+import type { TaskExecutor } from "./task-runner";
 import type { AgentHandler, LoopResult } from "./agent-loop";
 import type { RunContext, MachineEvent, State, WorkUnit, LoopBounds } from "./state-machine";
 import { buildSystemPrompt } from "./system-prompt";
@@ -45,6 +47,9 @@ export interface ProjectRunConfig {
   sandboxImage?: string;
   /** Enable Playwright browser tools (navigate, click, fill, extract, screenshot, eval) */
   browserTools?: boolean;
+  /** Run work units concurrently with this concurrency (≥2 enables parallel
+   *  mode; each unit runs its own implement→test⇄repair→review pipeline). */
+  parallelWorkUnits?: number;
 }
 
 /** State → role mapping */
@@ -207,7 +212,97 @@ export class ProjectRun implements AgentHandler {
       JSON.stringify(ctx.workUnits, null, 2),
       "utf8"
     );
+
+    // Parallel mode: run every unit's full pipeline here, then skip the
+    // sequential IMPLEMENT/TEST/REVIEW states entirely.
+    const concurrency = this.cfg.parallelWorkUnits ?? 0;
+    if (concurrency >= 2 && ctx.workUnits.length > 1) {
+      const bounds = this.cfg.loopBounds ?? { maxRepair: 3, maxReview: 2 };
+      const { results, allSucceeded } = await runWorkUnitsParallel(
+        ctx.workUnits,
+        this.makeParallelExecutor(ctx.workUnits.length),
+        { ...bounds, concurrency }
+      );
+      writeFileSync(
+        join(this.agentDir, "parallel-results.json"),
+        JSON.stringify(results, null, 2),
+        "utf8"
+      );
+      if (!allSucceeded) {
+        const failed = results.filter((r) => !r.success);
+        return {
+          type: "ESCALATE",
+          reason: `parallel execution: ${failed.length}/${results.length} unit(s) failed — ` +
+            failed.map((f) => `${f.workUnitId}: ${f.escalationReason}`).join("; "),
+        };
+      }
+      return { type: "IMPLEMENT_DONE", allUnitsComplete: true };
+    }
+
     return { type: "IMPLEMENT_DONE" };
+  }
+
+  /** TaskExecutor backed by the same role prompts as the sequential states. */
+  private makeParallelExecutor(totalUnits: number): TaskExecutor {
+    const task = this.cfg.task;
+    return {
+      implement: async (wu) => {
+        const prompt = buildStatePrompt("IMPLEMENT", task, {
+          instructions: [
+            `Work unit (parallel, 1 of ${totalUnits}): **${wu.description}**`,
+            "",
+            "Implement this work unit completely:",
+            "- Write all necessary source files using write_file",
+            "- Follow the architecture.md and implementation-plan.md in .agent/",
+            "- Only touch files this unit owns — other units run concurrently",
+            "- When done, summarise what you created",
+          ],
+        });
+        await this.callAgent("implementer", prompt);
+        return { success: true };
+      },
+      test: async (wu) => {
+        const prompt = buildStatePrompt("TEST", task, {
+          instructions: [
+            `Work unit: **${wu.description}**`,
+            "",
+            "Write tests using bun:test for THIS unit's files and run them with `bun test <file>`.",
+            "- If tests pass, reply with VERDICT: PASS",
+            "- If tests fail and you cannot fix them in one attempt, reply with VERDICT: FAIL",
+          ],
+        });
+        const result = await this.callAgent("test-engineer", prompt);
+        return { passed: /VERDICT:\s*PASS/i.test(result.finalText) };
+      },
+      repair: async (wu, attempt) => {
+        const prompt = buildStatePrompt("REPAIR", task, {
+          instructions: [
+            `Work unit: **${wu.description}** — repair attempt ${attempt}`,
+            "",
+            "Run this unit's tests with `bun test <file>` to see the failures.",
+            "Fix the source code (not the tests) to make them pass.",
+            "Confirm with another test run.",
+          ],
+        });
+        await this.callAgent("implementer", prompt);
+      },
+      review: async (wu) => {
+        const prompt = buildStatePrompt("REVIEW", task, {
+          instructions: [
+            `Work unit: **${wu.description}**`,
+            "",
+            "Review this unit's implementation:",
+            "- Use glob_files and read_file to inspect the code",
+            "- Run this unit's tests to confirm they pass",
+            "- Reply with VERDICT: APPROVE if the work is acceptable",
+            "- Reply with VERDICT: MUST_FIX and list issues if it needs rework",
+          ],
+        });
+        const result = await this.callAgent("reviewer", prompt);
+        const approved = /VERDICT:\s*APPROVE/i.test(result.finalText);
+        return { approved, mustFix: approved ? [] : [result.finalText.slice(0, 500)] };
+      },
+    };
   }
 
   private async handleImplement(ctx: RunContext): Promise<MachineEvent> {

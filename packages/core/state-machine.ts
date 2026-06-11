@@ -42,7 +42,7 @@ export type MachineEvent =
   | { type: "CLARIFY_DONE" }
   | { type: "DESIGN_DONE" }
   | { type: "PLAN_DONE"; workUnits: WorkUnit[]; blueprintValidated: boolean }
-  | { type: "IMPLEMENT_DONE" }
+  | { type: "IMPLEMENT_DONE"; allUnitsComplete?: boolean }
   | { type: "TESTS_PASS" }
   | { type: "TESTS_FAIL" }
   | { type: "REPAIR_DONE" }
@@ -122,7 +122,11 @@ export function transition(ctx: RunContext, event: MachineEvent): RunContext {
 
     case "PLAN":
       if (event.type === "IMPLEMENT_DONE") {
-        if (ctx.workUnits.length === 0) return { ...ctx, state: "DOCUMENT" };
+        // allUnitsComplete: a parallel executor already ran every unit's
+        // implement/test/review pipeline — skip straight to DOCUMENT.
+        if (ctx.workUnits.length === 0 || event.allUnitsComplete) {
+          return { ...ctx, state: "DOCUMENT" };
+        }
         return { ...ctx, state: "IMPLEMENT" };
       }
       break;

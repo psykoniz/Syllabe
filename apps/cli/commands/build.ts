@@ -19,6 +19,7 @@ export const buildCommand = new Command("build")
   .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .option("--browser-tools", "Enable Playwright browser automation tools", false)
+  .option("--parallel <n>", "Run work units concurrently with this concurrency (>=2 enables)", "0")
   .option("--harness-dir <path>", "Harness dir with promoted config (promotions.json)", "~/.projectos/harness")
   .action(async (opts) => {
     // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
@@ -63,6 +64,7 @@ export const buildCommand = new Command("build")
       sandbox: opts.sandbox,
       sandboxImage: opts.sandboxImage,
       browserTools: opts.browserTools,
+      parallelWorkUnits: parseInt(opts.parallel, 10) || undefined,
     });
 
     try {
