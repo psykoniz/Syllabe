@@ -211,9 +211,19 @@ function spawnBuild(opts: {
 }): string {
   const { randomUUID } = require("crypto") as { randomUUID: () => string };
   const runId = randomUUID();
+
+  // Isolated workspace per run — the agent must never write into the
+  // ProjectOS repo itself. Initialized as a git repo for commit tooling.
+  const workspace = join(process.cwd(), ".projectos", "workspaces", runId);
+  mkdirSync(workspace, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: workspace });
+  spawnSync("git", ["config", "user.email", "agent@projectos"], { cwd: workspace });
+  spawnSync("git", ["config", "user.name", "ProjectOS Agent"], { cwd: workspace });
+
   const args = [
     "bun", CLI_PATH, "build",
     "--task", opts.task,
+    "--workspace", workspace,
     "--db", DB_PATH,
     "--traces", TRACES_PATH,
   ];
@@ -229,6 +239,7 @@ function spawnBuild(opts: {
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'task', ?)`, [runId, opts.task]);
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'model', ?)`, [runId, opts.model ?? "default"]);
       db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'startedAt', ?)`, [runId, new Date().toISOString()]);
+      db.run(`INSERT OR REPLACE INTO run_meta VALUES (?, 'workspace', ?)`, [runId, workspace]);
     } finally {
       db.close();
     }
