@@ -38,3 +38,7 @@ export { loadPromotedConfig } from "./promoted-config";
 export type { PromotedConfig } from "./promoted-config";
 export { openAiCreateMessage, toOpenAiRequest, fromOpenAiResponse } from "./openai-adapter";
 export type { OpenAiAdapterOptions } from "./openai-adapter";
+export { appendSteering, readPendingSteering, markConsumed } from "./steering";
+export type { SteeringMessage } from "./steering";
+export { EXPLORE_TOOL, createExploreDispatcher, chainDispatchers } from "./explorer-tool";
+export type { ExploreDispatcherOptions } from "./explorer-tool";
