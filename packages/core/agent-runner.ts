@@ -63,6 +63,20 @@ export interface CreateMessageParams {
   system?: string | SystemBlock[];
   messages: MessageParam[];
   tools?: (ToolDef & { cache_control?: { type: "ephemeral" } })[];
+  /** Adaptive thinking — the only on-mode for fable/opus 4.7+ */
+  thinking?: { type: "adaptive" };
+  /** Effort control; "max" = deepest reasoning (fable/opus/sonnet-4.6) */
+  output_config?: { effort: "low" | "medium" | "high" | "max" };
+}
+
+/** Premium reasoning models get adaptive thinking at max effort. */
+export function reasoningParams(
+  model: string
+): Pick<CreateMessageParams, "thinking" | "output_config"> {
+  if (model.includes("fable") || model.includes("opus")) {
+    return { thinking: { type: "adaptive" }, output_config: { effort: "max" } };
+  }
+  return {};
 }
 
 export type CreateMessageFn = (params: CreateMessageParams) => Promise<ChatResponse>;
@@ -319,6 +333,7 @@ export async function runAgent(
       system,
       messages,
       tools,
+      ...reasoningParams(opts.model),
     });
 
     inputTokens += response.usage.input_tokens;

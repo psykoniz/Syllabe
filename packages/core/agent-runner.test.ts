@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runAgent, compactMessages, DEFAULT_COMPACTION } from "./agent-runner";
+import { runAgent, compactMessages, DEFAULT_COMPACTION, reasoningParams } from "./agent-runner";
 import type {
   CreateMessageFn,
   MessageParam,
@@ -401,5 +401,26 @@ describe("runAgent — compaction integration", () => {
     expect(result.messages.length).toBe(2);
     expect(result.messages[0].content).toBe("hello");
     rmSync(TMP, { recursive: true, force: true });
+  });
+});
+
+describe("reasoningParams", () => {
+  it("fable gets adaptive thinking at max effort", () => {
+    expect(reasoningParams("claude-fable-5")).toEqual({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "max" },
+    });
+  });
+
+  it("opus gets adaptive thinking at max effort", () => {
+    expect(reasoningParams("claude-opus-4-8")).toEqual({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "max" },
+    });
+  });
+
+  it("sonnet and haiku get no reasoning params", () => {
+    expect(reasoningParams("claude-sonnet-4-6")).toEqual({});
+    expect(reasoningParams("claude-haiku-4-5")).toEqual({});
   });
 });
