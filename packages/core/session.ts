@@ -12,6 +12,27 @@ import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, MessageParam, AgentRunResult } from "./agent-runner";
 import { buildSystemPrompt } from "./system-prompt";
 import type { SystemPromptOptions } from "./system-prompt";
+import {
+  AdrStore,
+  UserMemory,
+  LessonCurator,
+  SkillStore,
+  ProjectMemory,
+  assembleContext,
+} from "@projectos/memory";
+
+export interface MemoryPaths {
+  /** ~/.projectos/preferences.json — user-level prefs */
+  userPrefs?: string;
+  /** <workspace>/.agent/decisions/ — ADR files */
+  decisionsDir?: string;
+  /** <workspace>/.agent/lessons.json */
+  lessons?: string;
+  /** <workspace>/.agent/skills.json */
+  skills?: string;
+  /** <workspace>/.agent/project-memory.json */
+  projectMemory?: string;
+}
 
 export interface SessionConfig {
   model: string;
@@ -24,7 +45,12 @@ export interface SessionConfig {
   system?: string;
   /** Passed to buildSystemPrompt if system is not overridden */
   role?: SystemPromptOptions["role"];
+  /** Explicit memory context string — if omitted, auto-loaded from memoryPaths */
   memoryContext?: string;
+  /** Paths for memory layer — defaults derived from workspace/.agent/ */
+  memoryPaths?: MemoryPaths;
+  /** Topic hint for lesson matching (e.g. the user prompt) */
+  memoryTopic?: string;
   approval?: ApprovalHandler;
   maxIterations?: number;
   /** Injectable for tests; defaults to the real Anthropic client.
@@ -102,6 +128,33 @@ export class ProjectSession {
     return JSON.parse(readFileSync(p, "utf8"));
   }
 
+  private loadMemoryContext(topic: string): string {
+    if (this.config.memoryContext !== undefined) return this.config.memoryContext;
+
+    const agentDir = join(this.config.workspace, ".agent");
+    const mp = this.config.memoryPaths ?? {};
+
+    const userPrefsPath = mp.userPrefs ?? join(process.env.HOME ?? "~", ".projectos", "preferences.json");
+    const decisionsDir  = mp.decisionsDir  ?? join(agentDir, "decisions");
+    const lessonsPath   = mp.lessons       ?? join(agentDir, "lessons.json");
+    const skillsPath    = mp.skills        ?? join(agentDir, "skills.json");
+    const projectMemPath = mp.projectMemory ?? join(agentDir, "project-memory.json");
+
+    const userMem   = new UserMemory(userPrefsPath);
+    const adrStore  = new AdrStore(decisionsDir);
+    const lessons   = new LessonCurator(lessonsPath);
+    const skills    = new SkillStore(skillsPath);
+    const projMem   = new ProjectMemory(projectMemPath);
+
+    return assembleContext({
+      prefs:    userMem.toContextBlock(),
+      commands: projMem.toContextBlock(),
+      adrs:     adrStore.toContextBlock(),
+      lessons:  lessons.toContextBlock(topic),
+      skills:   skills.toContextBlock(),
+    });
+  }
+
   private buildToolContext(): ToolContext {
     const logPath = this.toolLogPath();
     const workspace = this.config.workspace;
@@ -133,13 +186,17 @@ export class ProjectSession {
     const createMessage = await this.getCreateMessage();
 
     const toolContext = this.buildToolContext();
+    const topic = typeof messages[0]?.content === "string"
+      ? messages[0].content
+      : (this.config.memoryTopic ?? "");
+    const memoryContext = this.loadMemoryContext(topic);
     const system =
       this.config.system ??
       buildSystemPrompt({
         workspace: this.config.workspace,
         branch: toolContext.branch?.(),
         role: this.config.role,
-        memoryContext: this.config.memoryContext,
+        memoryContext: memoryContext || undefined,
       });
 
     const result = await runAgent(messages, {
