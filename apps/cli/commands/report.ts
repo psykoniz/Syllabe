@@ -8,12 +8,10 @@ export const reportCommand = new Command("report")
   .description("Show cost and status report for all runs")
   .option("--db <path>", "SQLite database path", ".projectos/runs.db")
   .option("--traces <path>", "JSONL trace log path", ".projectos/traces.jsonl")
-  .option("--agent-id <id>", "Agent ID (placeholder for DB init)", "report")
-  .option("--environment-id <id>", "Environment ID (placeholder)", "report")
   .action((opts) => {
     const session = new ProjectSession({
-      agentId: opts.agentId,
-      environmentId: opts.environmentId,
+      model: "report",
+      workspace: process.cwd(),
       dbPath: opts.db,
       tracePath: opts.traces,
     });
@@ -25,10 +23,10 @@ export const reportCommand = new Command("report")
         return;
       }
 
-      console.log(`\n${"Run ID".padEnd(38)} ${"Status".padEnd(10)} ${"Session ID"}`);
+      console.log(`\n${"Run ID".padEnd(38)} ${"Status".padEnd(10)} ${"Model"}`);
       console.log("─".repeat(80));
       for (const r of runs) {
-        console.log(`${r.runId.padEnd(38)} ${r.status.padEnd(10)} ${r.sessionId ?? "—"}`);
+        console.log(`${r.runId.padEnd(38)} ${r.status.padEnd(10)} ${r.model}`);
       }
 
       if (existsSync(opts.traces)) {

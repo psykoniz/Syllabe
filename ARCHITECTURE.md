@@ -333,3 +333,6 @@ The secret redactor runs on every tool output before it is passed to any model p
 
 **ADR-005: No code before blueprint**
 The DESIGN state must produce a valid blueprint before the state machine can transition to PLAN or IMPLEMENT. The blueprint is a hard gate.
+
+**ADR-006: Custom agentic loop over /v1/messages instead of Managed Agents**
+The original design (ADR-000) relied on `client.beta.sessions` (Managed Agents), an Anthropic-hosted execution kernel. This was superseded when the deployment target switched to a third-party proxy (`ANTHROPIC_BASE_URL`) that exposes `/v1/messages` only. The new `agent-runner.ts` implements a bounded agentic loop: it calls `createMessage`, dispatches any `tool_use` blocks through the permission engine and tool dispatcher, feeds results back as `tool_result` content blocks, and loops until `stop_reason !== "tool_use"` or `maxIterations` is reached. The `createMessage` function is injected — in production it wraps `@anthropic-ai/sdk`, in tests it is a scripted double. Tradeoff: we own the loop (more control, easier testing) at the cost of losing Managed Agents features (server-side file mounts, Skills, MCP auto-wiring). Revisit if first-party Anthropic API access becomes available.

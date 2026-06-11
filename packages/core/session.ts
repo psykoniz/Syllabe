@@ -1,33 +1,47 @@
-import Anthropic from "@anthropic-ai/sdk";
-import type { BetaManagedAgentsStreamSessionEvents } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
+import { spawnSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 import { appendTrace } from "@projectos/telemetry";
+import { FsTools, BashTool, GitTools } from "@projectos/tools";
+import type { ToolContext } from "@projectos/tools";
+import { setHarnessApiKey } from "@projectos/policy";
+import type { ApprovalHandler } from "@projectos/policy";
+import { runAgent } from "./agent-runner";
+import type { CreateMessageFn, MessageParam, AgentRunResult } from "./agent-runner";
 
 export interface SessionConfig {
-  agentId: string;
-  environmentId: string;
+  model: string;
+  workspace: string;
   dbPath: string;
   tracePath: string;
+  toolLogPath?: string;       // default: <dir of dbPath>/tool-calls.jsonl
+  sessionsDir?: string;       // default: <dir of dbPath>/sessions
+  system?: string;
+  approval?: ApprovalHandler;
+  maxIterations?: number;
+  /** Injectable for tests; defaults to the real Anthropic client.
+   *  Reads ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL from env. */
+  createMessage?: CreateMessageFn;
 }
 
 export interface RunRecord {
   runId: string;
-  agentId: string;
-  sessionId: string | null;
+  model: string;
   status: "running" | "complete" | "failed";
   createdAt: string;
   updatedAt: string;
 }
 
 function openDb(path: string): Database {
+  mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true });
   db.run(`
     CREATE TABLE IF NOT EXISTS runs (
-      run_id    TEXT PRIMARY KEY,
-      agent_id  TEXT NOT NULL,
-      session_id TEXT,
-      status    TEXT NOT NULL DEFAULT 'running',
+      run_id     TEXT PRIMARY KEY,
+      model      TEXT NOT NULL,
+      status     TEXT NOT NULL DEFAULT 'running',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -35,122 +49,165 @@ function openDb(path: string): Database {
   return db;
 }
 
+async function defaultCreateMessage(): Promise<CreateMessageFn> {
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  const client = new Anthropic();
+  return (params) =>
+    client.messages.create(params as never) as unknown as ReturnType<CreateMessageFn>;
+}
+
 export class ProjectSession {
-  private client: Anthropic;
   private db: Database;
   readonly runId: string;
 
   constructor(private config: SessionConfig) {
-    this.client = new Anthropic();
     this.db = openDb(config.dbPath);
     this.runId = randomUUID();
+
+    // The harness's own credential must never appear in any tool output.
+    const harnessKey = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY;
+    if (harnessKey) setHarnessApiKey(harnessKey);
   }
 
   private now(): string {
     return new Date().toISOString();
   }
 
-  private async drainStream(sessionId: string): Promise<{ inputTokens: number; outputTokens: number }> {
-    let inputTokens = 0;
-    let outputTokens = 0;
-
-    const stream = await this.client.beta.sessions.events.stream(sessionId);
-    for await (const event of stream as AsyncIterable<BetaManagedAgentsStreamSessionEvents>) {
-      if (event.type === "span.model_request_end") {
-        inputTokens += event.model_usage.input_tokens;
-        outputTokens += event.model_usage.output_tokens;
-      }
-    }
-
-    return { inputTokens, outputTokens };
+  private toolLogPath(): string {
+    return this.config.toolLogPath ?? join(dirname(this.config.dbPath), "tool-calls.jsonl");
   }
 
-  async start(userPrompt: string): Promise<void> {
+  private sessionsDir(): string {
+    return this.config.sessionsDir ?? join(dirname(this.config.dbPath), "sessions");
+  }
+
+  private messagesPath(runId: string): string {
+    return join(this.sessionsDir(), `${runId}.json`);
+  }
+
+  private saveMessages(runId: string, messages: MessageParam[]): void {
+    mkdirSync(this.sessionsDir(), { recursive: true });
+    writeFileSync(this.messagesPath(runId), JSON.stringify(messages, null, 2), "utf8");
+  }
+
+  private loadMessages(runId: string): MessageParam[] {
+    const p = this.messagesPath(runId);
+    if (!existsSync(p)) throw new Error(`No saved conversation for run: ${runId}`);
+    return JSON.parse(readFileSync(p, "utf8"));
+  }
+
+  private buildToolContext(): ToolContext {
+    const logPath = this.toolLogPath();
+    const workspace = this.config.workspace;
+    return {
+      fs: new FsTools({ logPath }),
+      bash: new BashTool({ logPath, workspace }),
+      git: new GitTools({ logPath, repoPath: workspace }),
+      workspace,
+      branch: () => {
+        const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd: workspace,
+          encoding: "utf8",
+        });
+        return (r.stdout ?? "").trim();
+      },
+    };
+  }
+
+  private async getCreateMessage(): Promise<CreateMessageFn> {
+    return this.config.createMessage ?? (await defaultCreateMessage());
+  }
+
+  private async runTurns(
+    runId: string,
+    messages: MessageParam[],
+    phase: "SESSION" | "RESUME"
+  ): Promise<AgentRunResult> {
+    const start = Date.now();
+    const createMessage = await this.getCreateMessage();
+
+    const result = await runAgent(messages, {
+      createMessage,
+      model: this.config.model,
+      system: this.config.system,
+      toolContext: this.buildToolContext(),
+      approval: this.config.approval,
+      maxIterations: this.config.maxIterations,
+    });
+
+    this.saveMessages(runId, result.messages);
+
+    appendTrace(this.config.tracePath, {
+      ts: this.now(),
+      runId,
+      phase,
+      role: "core",
+      model: this.config.model,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      durationMs: Date.now() - start,
+    });
+
+    return result;
+  }
+
+  async start(userPrompt: string): Promise<AgentRunResult> {
     const now = this.now();
     this.db.run(
-      `INSERT INTO runs (run_id, agent_id, session_id, status, created_at, updated_at)
-       VALUES (?, ?, NULL, 'running', ?, ?)`,
-      [this.runId, this.config.agentId, now, now]
+      `INSERT INTO runs (run_id, model, status, created_at, updated_at)
+       VALUES (?, ?, 'running', ?, ?)`,
+      [this.runId, this.config.model, now, now]
     );
 
-    const start = Date.now();
-
-    const session = await this.client.beta.sessions.create({
-      agent: this.config.agentId,
-      environment_id: this.config.environmentId,
-    });
-
-    this.db.run(
-      `UPDATE runs SET session_id = ?, updated_at = ? WHERE run_id = ?`,
-      [session.id, this.now(), this.runId]
-    );
-
-    await this.client.beta.sessions.events.send(session.id, {
-      events: [{ type: "user.message", content: [{ type: "text", text: userPrompt }] }],
-    });
-
-    const { inputTokens, outputTokens } = await this.drainStream(session.id);
-    const durationMs = Date.now() - start;
-
-    this.db.run(
-      `UPDATE runs SET status = 'complete', updated_at = ? WHERE run_id = ?`,
-      [this.now(), this.runId]
-    );
-
-    appendTrace(this.config.tracePath, {
-      ts: this.now(),
-      runId: this.runId,
-      phase: "SESSION",
-      role: "core",
-      model: "unknown",
-      inputTokens,
-      outputTokens,
-      durationMs,
-    });
+    try {
+      const result = await this.runTurns(
+        this.runId,
+        [{ role: "user", content: userPrompt }],
+        "SESSION"
+      );
+      this.db.run(`UPDATE runs SET status = 'complete', updated_at = ? WHERE run_id = ?`, [
+        this.now(),
+        this.runId,
+      ]);
+      return result;
+    } catch (e) {
+      this.db.run(`UPDATE runs SET status = 'failed', updated_at = ? WHERE run_id = ?`, [
+        this.now(),
+        this.runId,
+      ]);
+      throw e;
+    }
   }
 
-  async resume(sessionId: string, message: string): Promise<void> {
-    const start = Date.now();
+  /** Resume a prior run by id: loads its saved conversation and continues it. */
+  async resume(runId: string, message: string): Promise<AgentRunResult> {
+    const messages = this.loadMessages(runId);
+    messages.push({ role: "user", content: message });
 
-    await this.client.beta.sessions.events.send(sessionId, {
-      events: [{ type: "user.message", content: [{ type: "text", text: message }] }],
-    });
+    const result = await this.runTurns(runId, messages, "RESUME");
 
-    const { inputTokens, outputTokens } = await this.drainStream(sessionId);
-    const durationMs = Date.now() - start;
-
-    this.db.run(
-      `UPDATE runs SET updated_at = ? WHERE run_id = ?`,
-      [this.now(), this.runId]
-    );
-
-    appendTrace(this.config.tracePath, {
-      ts: this.now(),
-      runId: this.runId,
-      phase: "RESUME",
-      role: "core",
-      model: "unknown",
-      inputTokens,
-      outputTokens,
-      durationMs,
-    });
+    this.db.run(`UPDATE runs SET status = 'complete', updated_at = ? WHERE run_id = ?`, [
+      this.now(),
+      runId,
+    ]);
+    return result;
   }
 
-  getRecord(): RunRecord | null {
-    return this.db
-      .query<RunRecord, string>(
-        `SELECT run_id as runId, agent_id as agentId, session_id as sessionId,
-                status, created_at as createdAt, updated_at as updatedAt
-         FROM runs WHERE run_id = ?`
-      )
-      .get(this.runId) ?? null;
+  getRecord(runId: string = this.runId): RunRecord | null {
+    return (
+      this.db
+        .query<RunRecord, string>(
+          `SELECT run_id as runId, model, status, created_at as createdAt, updated_at as updatedAt
+           FROM runs WHERE run_id = ?`
+        )
+        .get(runId) ?? null
+    );
   }
 
   listRuns(): RunRecord[] {
     return this.db
       .query<RunRecord, []>(
-        `SELECT run_id as runId, agent_id as agentId, session_id as sessionId,
-                status, created_at as createdAt, updated_at as updatedAt
+        `SELECT run_id as runId, model, status, created_at as createdAt, updated_at as updatedAt
          FROM runs ORDER BY created_at DESC`
       )
       .all();
