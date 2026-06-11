@@ -1,5 +1,4 @@
 import { FsTools } from "./filesystem/fs-tools";
-import { BashTool } from "./shell/bash";
 import { GitTools } from "./git/git-tools";
 
 // Self-contained tool schema — structurally compatible with the Anthropic
@@ -14,9 +13,15 @@ export interface ToolDef {
   };
 }
 
+/** Anything that can execute a shell command — BashTool or a sandboxed runner */
+export interface BashRunner {
+  run(command: string): { stdout: string; stderr: string; exitCode: number };
+  getEnv(): Record<string, string>;
+}
+
 export interface ToolContext {
   fs: FsTools;
-  bash: BashTool;
+  bash: BashRunner;
   git: GitTools;
   workspace: string;
   /** Current git branch, used by the permission layer for git:commit rules */

@@ -7,4 +7,4 @@ export { logToolCall } from "./tool-logger";
 export type { ToolCallEntry } from "./tool-logger";
 export type { FsToolsOptions } from "./filesystem/fs-tools";
 export { TOOL_DEFINITIONS, dispatchTool } from "./tool-definitions";
-export type { ToolDef, ToolContext, ToolDispatchResult } from "./tool-definitions";
+export type { ToolDef, ToolContext, ToolDispatchResult, BashRunner } from "./tool-definitions";

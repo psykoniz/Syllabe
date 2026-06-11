@@ -9,6 +9,7 @@ import { buildSystemPrompt } from "./system-prompt";
 import { appendTrace } from "@projectos/telemetry";
 import { FsTools, BashTool, GitTools, TOOL_DEFINITIONS } from "@projectos/tools";
 import type { ToolContext } from "@projectos/tools";
+import { DockerSandbox, SandboxedBash } from "@projectos/sandbox";
 import { PermissionEngine } from "@projectos/policy";
 import type { ApprovalHandler } from "@projectos/policy";
 import { resolveModel } from "@projectos/router";
@@ -36,6 +37,11 @@ export interface ProjectRunConfig {
   /** Per-role system prompt overrides (candidate config scope). Keyed by role
    *  name (e.g. "reviewer"); replaces the generated prompt for that role. */
   systemPromptOverrides?: Record<string, string>;
+  /** Route bash tool calls through a Docker sandbox for isolation.
+   *  Requires Docker to be available on the host. */
+  sandbox?: boolean;
+  /** Docker image to use when sandbox is enabled (default: node:20-alpine) */
+  sandboxImage?: string;
 }
 
 /** State → role mapping */
@@ -61,9 +67,20 @@ export class ProjectRun implements AgentHandler {
     mkdirSync(this.agentDir, { recursive: true });
 
     const logPath = join(cfg.workspace, ".projectos", "tool-calls.jsonl");
+    let bashTool;
+    if (cfg.sandbox) {
+      if (DockerSandbox.isAvailable()) {
+        bashTool = new SandboxedBash({ logPath, workspace: cfg.workspace, sandboxImage: cfg.sandboxImage });
+      } else {
+        console.warn("sandbox requested but Docker is not available — falling back to host bash");
+        bashTool = new BashTool({ logPath, workspace: cfg.workspace });
+      }
+    } else {
+      bashTool = new BashTool({ logPath, workspace: cfg.workspace });
+    }
     this.toolContext = {
       fs: new FsTools({ logPath }),
-      bash: new BashTool({ logPath, workspace: cfg.workspace }),
+      bash: bashTool,
       git: new GitTools({ logPath, repoPath: cfg.workspace }),
       workspace: cfg.workspace,
       branch: () => {

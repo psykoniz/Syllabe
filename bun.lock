@@ -33,6 +33,7 @@
       "dependencies": {
         "@anthropic-ai/sdk": "latest",
         "@projectos/memory": "*",
+        "@projectos/sandbox": "*",
       },
     },
     "packages/evals": {
@@ -53,6 +54,10 @@
     "packages/router": {
       "name": "@projectos/router",
       "version": "0.0.1",
+    },
+    "packages/sandbox": {
+      "name": "@projectos/sandbox",
+      "version": "0.1.0",
     },
     "packages/telemetry": {
       "name": "@projectos/telemetry",
@@ -81,6 +86,8 @@
     "@projectos/policy": ["@projectos/policy@workspace:packages/policy"],
 
     "@projectos/router": ["@projectos/router@workspace:packages/router"],
+
+    "@projectos/sandbox": ["@projectos/sandbox@workspace:packages/sandbox"],
 
     "@projectos/telemetry": ["@projectos/telemetry@workspace:packages/telemetry"],
 

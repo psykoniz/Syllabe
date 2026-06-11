@@ -15,6 +15,8 @@ export const buildCommand = new Command("build")
   .option("--max-iterations <n>", "Max agent iterations per state", "20")
   .option("--yes", "Apply all interview defaults (non-interactive)", false)
   .option("--model-override <id>", "Force all role calls to use this model (e.g. claude-sonnet-4-6)")
+  .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
+  .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .action(async (opts) => {
     const runId = randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
@@ -37,6 +39,8 @@ export const buildCommand = new Command("build")
       autoYes: opts.yes,
       maxIterationsPerState: parseInt(opts.maxIterations, 10),
       modelOverride: opts.modelOverride,
+      sandbox: opts.sandbox,
+      sandboxImage: opts.sandboxImage,
     });
 
     try {

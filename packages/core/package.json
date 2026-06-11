@@ -5,6 +5,7 @@
   "main": "index.ts",
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
-    "@projectos/memory": "*"
+    "@projectos/memory": "*",
+    "@projectos/sandbox": "*"
   }
 }
