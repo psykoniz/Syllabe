@@ -200,6 +200,46 @@ describe("TEST verdict parsing", () => {
   });
 });
 
+// ─── loopBounds override ───────────────────────────────────────────────────
+
+describe("loopBounds override", () => {
+  let workspace: string;
+
+  beforeEach(() => { workspace = makeWorkspace(`bounds-${Date.now()}`); });
+  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+
+  it("escalates after custom maxRepair instead of the default 3", async () => {
+    const agentDir = join(workspace, ".agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "product.md"), "# P");
+    writeFileSync(join(agentDir, "architecture.md"), "# A");
+    writeFileSync(join(agentDir, "implementation-plan.md"), "# I");
+    writeFileSync(join(agentDir, "test-plan.md"), "# T");
+
+    // TEST always fails → with maxRepair=1, the run must escalate after 1 repair
+    const createMessage: CreateMessageFn = async (params) => {
+      const last = params.messages[params.messages.length - 1];
+      const text = typeof last.content === "string" ? last.content : JSON.stringify(last.content);
+      let reply = "done";
+      if (text.includes("## State: TEST")) reply = "VERDICT: FAIL";
+      if (text.includes("extract") || text.includes("work unit")) reply = '[{"id":"wu-1","description":"main"}]';
+      return {
+        content: [{ type: "text", text: reply }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 5 },
+      };
+    };
+
+    const run = makeRun(workspace, createMessage, {
+      loopBounds: { maxRepair: 1, maxReview: 2 },
+    });
+    const result = await run.run();
+
+    expect(result.finalContext.state).toBe("ESCALATED");
+    expect(result.finalContext.escalationReason).toContain("max repair iterations (1)");
+  });
+});
+
 // ─── REVIEW verdict parsing ────────────────────────────────────────────────
 
 describe("REVIEW verdict parsing", () => {

@@ -4,7 +4,7 @@ import { join } from "path";
 import { runAgentLoop } from "./agent-loop";
 import { makeContext } from "./state-machine";
 import type { AgentHandler, LoopResult } from "./agent-loop";
-import type { RunContext, MachineEvent, State, WorkUnit } from "./state-machine";
+import type { RunContext, MachineEvent, State, WorkUnit, LoopBounds } from "./state-machine";
 import { buildSystemPrompt } from "./system-prompt";
 import { appendTrace } from "@projectos/telemetry";
 import { FsTools, BashTool, GitTools, TOOL_DEFINITIONS } from "@projectos/tools";
@@ -31,6 +31,8 @@ export interface ProjectRunConfig {
   maxIterationsPerState?: number;
   /** Force all role calls to use this model (useful when fable is unavailable) */
   modelOverride?: string;
+  /** Override state machine loop bounds (e.g. from a promoted candidate config) */
+  loopBounds?: LoopBounds;
 }
 
 /** State → role mapping */
@@ -374,7 +376,7 @@ export class ProjectRun implements AgentHandler {
   // ─── Entry point ───────────────────────────────────────────────────────────
 
   async run(): Promise<LoopResult> {
-    const ctx = makeContext();
+    const ctx = makeContext([], this.cfg.loopBounds);
     return runAgentLoop(ctx, {
       runId: this.cfg.runId,
       db: this.cfg.db,

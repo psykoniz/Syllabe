@@ -79,7 +79,20 @@ export const selfImproveCommand = new Command("self-improve")
       runsPerTask: parseInt(opts.runs, 10),
       costCapUsd: parseFloat(opts.costCap),
     });
-    const candidateRun = await runner.run(candidateId, proposal.change);
+    // Apply the candidate's loop bounds to the benchmark runs via env
+    // (eval tasks read PROJECTOS_LOOP_BOUNDS in _harness.ts)
+    const prevBounds = process.env.PROJECTOS_LOOP_BOUNDS;
+    if (proposal.change.loopBounds) {
+      const merged = { maxRepair: 3, maxReview: 2, ...proposal.change.loopBounds };
+      process.env.PROJECTOS_LOOP_BOUNDS = JSON.stringify(merged);
+    }
+    let candidateRun;
+    try {
+      candidateRun = await runner.run(candidateId, proposal.change);
+    } finally {
+      if (prevBounds === undefined) delete process.env.PROJECTOS_LOOP_BOUNDS;
+      else process.env.PROJECTOS_LOOP_BOUNDS = prevBounds;
+    }
     const candidateScores = aggregateScores(candidateRun.result.scores);
 
     console.log(`Benchmark done. Total cost: $${candidateRun.result.totalCostUsd.toFixed(4)}`);

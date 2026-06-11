@@ -16,7 +16,22 @@ export type EvalRunOpts = {
   pendingLabels?: string[];
   /** Force all role calls to this model (avoids fable 503s) */
   modelOverride?: string;
+  /** Loop bounds override (e.g. from a candidate config under benchmark) */
+  loopBounds?: { maxRepair: number; maxReview: number };
 };
+
+/** Read loop bounds from PROJECTOS_LOOP_BOUNDS env (JSON, e.g. '{"maxRepair":3,"maxReview":3}') */
+function envLoopBounds(): { maxRepair: number; maxReview: number } | undefined {
+  const raw = process.env.PROJECTOS_LOOP_BOUNDS;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.maxRepair === "number" && typeof parsed.maxReview === "number") return parsed;
+  } catch {
+    // ignore malformed env
+  }
+  return undefined;
+}
 
 export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "taskId" | "runIndex">> {
   const hasCredentials = !!(process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY);
@@ -70,6 +85,7 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
       autoYes: true,
       maxIterationsPerState: 20,
       modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
+      loopBounds: opts.loopBounds ?? envLoopBounds(),
     });
 
     const result = await run.run();
