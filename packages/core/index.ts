@@ -27,3 +27,4 @@ export { runWorkUnit } from "./task-runner";
 export type { TaskExecutor, TaskResult, TaskRunnerOptions } from "./task-runner";
 export { writeCheckpoint, loadCheckpoints, loadLatestCheckpoint, ensureCheckpointTable } from "./checkpoint";
 export type { CheckpointRow } from "./checkpoint";
+export { openDb, ensureRunMetaTable, setRunMeta } from "./session-db";

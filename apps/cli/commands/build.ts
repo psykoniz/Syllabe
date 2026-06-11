@@ -4,6 +4,7 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { Database } from "bun:sqlite";
 import { ProjectRun, defaultCreateMessage } from "@projectos/core";
+import { ensureRunMetaTable, setRunMeta } from "@projectos/core";
 import { autoApprove, interactiveApproval } from "@projectos/policy";
 
 export const buildCommand = new Command("build")
@@ -21,6 +22,10 @@ export const buildCommand = new Command("build")
     const runId = randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
     const db = new Database(opts.db, { create: true });
+    ensureRunMetaTable(db);
+    setRunMeta(db, runId, "task", opts.task);
+    setRunMeta(db, runId, "model", opts.modelOverride ?? "default");
+    setRunMeta(db, runId, "startedAt", new Date().toISOString());
 
     console.log(`\nProjectOS build — run ${runId}`);
     console.log(`Workspace: ${opts.workspace}`);

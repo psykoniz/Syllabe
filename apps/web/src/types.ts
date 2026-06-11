@@ -5,6 +5,7 @@ export interface RunSummary {
   escalation_reason: string | null;
   ts: string;
   created_at: string;
+  task?: string;
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
@@ -39,7 +40,7 @@ export interface CostSummary {
 }
 
 export interface RunDetail {
-  run: CheckpointRow;
+  run: CheckpointRow & { task?: string };
   checkpoints: CheckpointRow[];
   traces: TraceEvent[];
   cost: CostSummary;
@@ -50,4 +51,19 @@ export interface PendingApproval {
   tool: string;
   args: unknown;
   id: string;
+}
+
+export type PhaseGroup = "planning" | "working" | "quality" | "finishing" | "escalated";
+
+export function phaseGroup(state: string): PhaseGroup {
+  const s = state.toUpperCase();
+  if (["INTAKE", "CLARIFY", "DESIGN", "PLAN"].includes(s)) return "planning";
+  if (["IMPLEMENT", "TEST", "REPAIR"].includes(s)) return "working";
+  if (["REVIEW"].includes(s)) return "quality";
+  if (["DOCUMENT", "LEARN", "COMPLETE"].includes(s)) return "finishing";
+  return "escalated";
+}
+
+export function isRunning(state: string): boolean {
+  return !["COMPLETE", "ESCALATED"].includes(state.toUpperCase());
 }

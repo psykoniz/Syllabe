@@ -1,25 +1,57 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import type { PendingApproval } from "../types";
+
+function requestNotificationPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function notifyApproval(approval: PendingApproval) {
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification("ProjectOS — approval needed", {
+      body: `${approval.tool} · run ${approval.runId.slice(0, 8)}`,
+      icon: "/favicon.ico",
+      tag: `approval-${approval.runId}`,
+    });
+  }
+}
 
 export default function ApprovalQueue() {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [open, setOpen] = useState(false);
   const [processing, setProcessing] = useState<Set<string>>(new Set());
+  const knownIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    requestNotificationPermission();
+  }, []);
 
   useEffect(() => {
     const fetchApprovals = async () => {
       try {
         const res = await fetch("/api/approvals");
-        if (res.ok) {
-          const data = (await res.json()) as PendingApproval[];
-          setApprovals(data);
+        if (!res.ok) return;
+        const data = (await res.json()) as PendingApproval[];
+        setApprovals(data);
+
+        // Notify for newly arrived approvals
+        for (const a of data) {
+          const key = `${a.runId}-${a.id}`;
+          if (!knownIds.current.has(key)) {
+            knownIds.current.add(key);
+            notifyApproval(a);
+          }
         }
+
+        // Auto-open panel when new approvals arrive
+        if (data.length > 0) setOpen(true);
       } catch {
         // ignore
       }
     };
     fetchApprovals();
-    const interval = setInterval(fetchApprovals, 3000);
+    const interval = setInterval(fetchApprovals, 2000);
     return () => clearInterval(interval);
   }, []);
 
@@ -29,12 +61,9 @@ export default function ApprovalQueue() {
     try {
       await fetch(`/api/runs/${runId}/${decision}`, { method: "POST" });
       setApprovals((prev) => prev.filter((a) => a.runId !== runId));
+      if (approvals.length <= 1) setOpen(false);
     } finally {
-      setProcessing((p) => {
-        const next = new Set(p);
-        next.delete(key);
-        return next;
-      });
+      setProcessing((p) => { const next = new Set(p); next.delete(key); return next; });
     }
   };
 
@@ -45,38 +74,32 @@ export default function ApprovalQueue() {
       {/* Badge */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-gray-950 font-semibold px-4 py-2 rounded-full shadow-lg transition-colors"
+        className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-gray-950 font-semibold px-4 py-2.5 rounded-full shadow-lg shadow-amber-900/40 transition-colors"
       >
-        <span className="w-5 h-5 bg-gray-950 text-amber-400 rounded-full text-xs flex items-center justify-center font-bold">
+        <span className="w-5 h-5 bg-gray-950/30 text-gray-950 rounded-full text-xs flex items-center justify-center font-bold">
           {approvals.length}
         </span>
-        Pending Approvals
+        Approval needed
       </button>
 
       {open && (
-        <div className="absolute bottom-12 right-0 w-96 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-            <span className="text-sm font-semibold text-gray-200">Approval Queue</span>
+        <div className="absolute bottom-14 right-0 w-[22rem] bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <span className="text-sm font-semibold text-amber-300">Pending approvals</span>
             <button
               onClick={() => setOpen(false)}
-              className="text-gray-500 hover:text-gray-300 text-lg leading-none"
-            >
-              &times;
-            </button>
+              className="text-gray-500 hover:text-gray-300 transition-colors text-xl leading-none"
+            >×</button>
           </div>
-          <div className="divide-y divide-gray-800 max-h-96 overflow-y-auto">
+          <div className="divide-y divide-gray-800/60 max-h-96 overflow-y-auto">
             {approvals.map((a) => (
-              <div key={`${a.runId}-${a.id}`} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-gray-400 mb-0.5">
-                      Run: <span className="text-gray-300 font-mono">{a.runId.slice(0, 8)}</span>
-                    </p>
-                    <p className="text-sm font-medium text-amber-300">{a.tool}</p>
-                  </div>
-                </div>
+              <div key={`${a.runId}-${a.id}`} className="px-4 py-3.5">
+                <p className="text-xs text-gray-500 mb-1">
+                  Run <span className="text-gray-400 font-mono">{a.runId.slice(0, 8)}</span>
+                </p>
+                <p className="text-sm font-semibold text-amber-300 mb-2">{a.tool}</p>
                 {a.args !== undefined && (
-                  <pre className="text-xs text-gray-400 bg-gray-950 rounded p-2 mb-3 overflow-x-auto max-h-24 overflow-y-auto">
+                  <pre className="text-xs text-gray-400 bg-gray-950 rounded-lg p-2.5 mb-3 overflow-x-auto max-h-20 overflow-y-auto">
                     {typeof a.args === "string" ? a.args : JSON.stringify(a.args, null, 2)}
                   </pre>
                 )}
@@ -84,16 +107,16 @@ export default function ApprovalQueue() {
                   <button
                     onClick={() => decide(a.runId, "approve")}
                     disabled={processing.has(`${a.runId}-approve`)}
-                    className="flex-1 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs font-medium py-1.5 rounded transition-colors"
+                    className="flex-1 bg-green-700/80 hover:bg-green-600 border border-green-600/50 disabled:opacity-50 text-white text-xs font-medium py-1.5 rounded-lg transition-colors"
                   >
-                    Approve
+                    ✓ Approve
                   </button>
                   <button
                     onClick={() => decide(a.runId, "deny")}
                     disabled={processing.has(`${a.runId}-deny`)}
-                    className="flex-1 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs font-medium py-1.5 rounded transition-colors"
+                    className="flex-1 bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 disabled:opacity-50 text-white text-xs font-medium py-1.5 rounded-lg transition-colors"
                   >
-                    Deny
+                    ✗ Deny
                   </button>
                 </div>
               </div>
