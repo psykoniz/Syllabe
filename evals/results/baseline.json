@@ -1,0 +1,138 @@
+[
+  {
+    "version": 1,
+    "date": "2026-06-11T05:41:24.366Z",
+    "scores": [
+      {
+        "taskId": "task-00-smoke",
+        "runs": [
+          {
+            "taskId": "task-00-smoke",
+            "runIndex": 0,
+            "passed": true,
+            "costUsd": 0,
+            "durationMs": 474441,
+            "secretsLeaked": false,
+            "notes": "state=COMPLETE steps=21",
+            "pendingLabels": []
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 1,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": false
+      },
+      {
+        "taskId": "task-01-todo-app",
+        "runs": [
+          {
+            "taskId": "task-01-todo-app",
+            "runIndex": 0,
+            "passed": true,
+            "costUsd": 0,
+            "durationMs": 1155162,
+            "secretsLeaked": false,
+            "notes": "state=COMPLETE steps=30",
+            "pendingLabels": [
+              "unnecessaryQuestions",
+              "architectureQuality"
+            ]
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 1,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": true
+      },
+      {
+        "taskId": "task-02-stripe",
+        "runs": [
+          {
+            "taskId": "task-02-stripe",
+            "runIndex": 0,
+            "passed": true,
+            "costUsd": 0,
+            "durationMs": 1129407,
+            "secretsLeaked": false,
+            "notes": "state=COMPLETE steps=33",
+            "pendingLabels": [
+              "unnecessaryQuestions"
+            ]
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 1,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": true
+      },
+      {
+        "taskId": "task-03-bug-fix",
+        "runs": [
+          {
+            "taskId": "task-03-bug-fix",
+            "runIndex": 0,
+            "passed": false,
+            "costUsd": 0,
+            "durationMs": 454400,
+            "secretsLeaked": false,
+            "notes": "state=ESCALATED steps=16 escalation=max review cycles (2) exceeded",
+            "pendingLabels": []
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 0,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": false
+      },
+      {
+        "taskId": "task-04-playwright",
+        "runs": [
+          {
+            "taskId": "task-04-playwright",
+            "runIndex": 0,
+            "passed": true,
+            "costUsd": 0,
+            "durationMs": 486379,
+            "secretsLeaked": false,
+            "notes": "state=COMPLETE steps=21",
+            "pendingLabels": [
+              "architectureQuality"
+            ]
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 1,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": true
+      },
+      {
+        "taskId": "task-05-landing-page",
+        "runs": [
+          {
+            "taskId": "task-05-landing-page",
+            "runIndex": 0,
+            "passed": true,
+            "costUsd": 0,
+            "durationMs": 1213894,
+            "secretsLeaked": false,
+            "notes": "state=COMPLETE steps=30",
+            "pendingLabels": [
+              "unnecessaryQuestions",
+              "architectureQuality"
+            ]
+          }
+        ],
+        "meanCostUsd": 0,
+        "worstCostUsd": 0,
+        "passRate": 1,
+        "anySecretsLeaked": false,
+        "hasPendingLabels": true
+      }
+    ]
+  }
+]
