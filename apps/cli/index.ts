@@ -4,6 +4,7 @@ import { runCommand } from "./commands/run";
 import { resumeCommand } from "./commands/resume";
 import { reportCommand } from "./commands/report";
 import { buildCommand } from "./commands/build";
+import { evalCommand } from "./commands/eval";
 
 const program = new Command("projectos")
   .version("0.0.1")
@@ -13,5 +14,6 @@ program.addCommand(runCommand);
 program.addCommand(resumeCommand);
 program.addCommand(reportCommand);
 program.addCommand(buildCommand);
+program.addCommand(evalCommand);
 
 program.parse(process.argv);
