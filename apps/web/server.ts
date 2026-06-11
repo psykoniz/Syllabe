@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { validateRepoParams, redactGitUrl } from "./validate";
+import { appendSteering } from "@projectos/core";
 
 const PORT = parseInt(process.env.PORT ?? "4321", 10);
 const DB_PATH = process.env.PROJECTOS_DB_PATH ?? join(process.cwd(), ".projectos", "runs.db");
@@ -493,6 +494,26 @@ Bun.serve({
       const decision = approveMatch[2] as "approve" | "deny";
       writeApproval(runId, decision);
       return json({ ok: true, decision });
+    }
+
+    // POST /api/runs/:id/steer — queue a mid-run operator instruction
+    const steerMatch = pathname.match(/^\/api\/runs\/([^/]+)\/steer$/);
+    if (steerMatch && req.method === "POST") {
+      try {
+        const runId = steerMatch[1];
+        const body = (await req.json()) as { text?: string };
+        const text = body.text?.trim();
+        if (!text) return json({ error: "text is required" }, 400);
+        if (text.length > 2000) return json({ error: "text too long (max 2000 chars)" }, 400);
+        const db = openDb();
+        const workspace = db ? getRunMeta(db, runId).workspace : undefined;
+        db?.close();
+        if (!workspace) return json({ error: "unknown run or no workspace" }, 404);
+        const msg = appendSteering(workspace, runId, text);
+        return json({ ok: true, id: msg.id }, 202);
+      } catch (e) {
+        return json({ error: String(e) }, 500);
+      }
     }
 
     // GET /api/approvals

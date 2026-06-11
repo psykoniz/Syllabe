@@ -22,6 +22,30 @@ export default function RunDetailPage() {
   // Repo diff state
   const [diffData, setDiffData] = useState<DiffResponse | null>(null);
 
+  // Mid-run steering
+  const [steerText, setSteerText] = useState("");
+  const [steerStatus, setSteerStatus] = useState<"idle" | "sending" | "queued" | "error">("idle");
+
+  const sendSteering = async () => {
+    const text = steerText.trim();
+    if (!text || !id) return;
+    setSteerStatus("sending");
+    try {
+      const res = await fetch(`/api/runs/${id}/steer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSteerText("");
+      setSteerStatus("queued");
+      setTimeout(() => setSteerStatus("idle"), 3000);
+    } catch {
+      setSteerStatus("error");
+      setTimeout(() => setSteerStatus("idle"), 3000);
+    }
+  };
+
   const loadDiff = async () => {
     if (!id) return;
     try {
@@ -271,6 +295,29 @@ export default function RunDetailPage() {
               End &#8677;
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Mid-run steering — visible while the run is active */}
+      {!["COMPLETE", "ESCALATED"].includes(run.state.toUpperCase()) && (
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={steerText}
+            onChange={(e) => setSteerText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") sendSteering(); }}
+            placeholder="Send an instruction to the agent (applied at the next step)…"
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 transition-colors"
+          />
+          <button
+            onClick={sendSteering}
+            disabled={!steerText.trim() || steerStatus === "sending"}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {steerStatus === "sending" ? "Sending…" : "Steer"}
+          </button>
+          {steerStatus === "queued" && <span className="text-xs text-green-400">✓ queued</span>}
+          {steerStatus === "error" && <span className="text-xs text-red-400">failed</span>}
         </div>
       )}
 

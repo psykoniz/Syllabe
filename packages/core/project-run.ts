@@ -19,6 +19,8 @@ import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
 import { UserMemory, LessonCurator, GlobalMemory, projectKeyFor } from "@projectos/memory";
+import { readPendingSteering, markConsumed } from "./steering";
+import { EXPLORE_TOOL, createExploreDispatcher, chainDispatchers } from "./explorer-tool";
 import type { Lesson } from "@projectos/memory";
 import { buildRepoContext, buildRepoTree } from "./repo-context";
 import { ensureRunMetaTable, setRunMeta } from "./session-db";
@@ -582,14 +584,39 @@ export class ProjectRun implements AgentHandler {
       this.browserSession = new BrowserSession({ logPath });
     }
 
-    const extraTools = this.cfg.browserTools ? PLAYWRIGHT_TOOL_DEFINITIONS : [];
-    const extraDispatcher = this.cfg.browserTools && this.browserSession
+    const extraTools = [...(this.cfg.browserTools ? PLAYWRIGHT_TOOL_DEFINITIONS : [])];
+    const playwrightDispatcher = this.cfg.browserTools && this.browserSession
       ? (name: string, input: Record<string, unknown>) =>
           dispatchPlaywrightTool(name, input, this.browserSession!)
       : undefined;
 
+    // Architect and implementer can fan out read-only research sub-agents
+    let exploreDispatcher;
+    if (ProjectRun.MEMORY_ROLES.has(role)) {
+      extraTools.push(EXPLORE_TOOL);
+      exploreDispatcher = createExploreDispatcher({
+        createMessage: this.cfg.createMessage,
+        toolContext: this.toolContext,
+      });
+    }
+    const extraDispatcher =
+      playwrightDispatcher || exploreDispatcher
+        ? chainDispatchers(playwrightDispatcher, exploreDispatcher)
+        : undefined;
+
     const memory = ProjectRun.MEMORY_ROLES.has(role) ? this.buildMemoryBlock() : "";
-    const finalPrompt = memory ? `${memory}\n\n${prompt}` : prompt;
+
+    // Mid-run operator steering: inject pending instructions exactly once
+    let steeringBlock = "";
+    const pending = readPendingSteering(this.cfg.workspace, this.cfg.runId);
+    if (pending.length > 0) {
+      steeringBlock =
+        "### Operator instructions (mid-run)\n" +
+        pending.map((m) => `- ${m.text}`).join("\n");
+      markConsumed(this.cfg.workspace, this.cfg.runId, pending.map((m) => m.id));
+    }
+
+    const finalPrompt = [steeringBlock, memory, prompt].filter(Boolean).join("\n\n");
 
     const result = await runAgent(
       [{ role: "user", content: finalPrompt }],
