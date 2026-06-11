@@ -40,10 +40,19 @@ export interface CostSummary {
 }
 
 export interface RunDetail {
-  run: CheckpointRow & { task?: string };
+  run: CheckpointRow & { task?: string; git_url?: string; base_branch?: string; work_branch?: string };
   checkpoints: CheckpointRow[];
   traces: TraceEvent[];
   cost: CostSummary;
+}
+
+export interface DiffResponse {
+  baseBranch: string;
+  workBranch: string;
+  baseSha: string | null;
+  diff: string;
+  stat: string;
+  truncated?: boolean;
 }
 
 export interface PendingApproval {

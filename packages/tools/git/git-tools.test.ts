@@ -80,3 +80,54 @@ describe("GitTools.commit", () => {
     expect(log).toBeTruthy();
   });
 });
+
+describe("GitTools.clone / branches / diffRange", () => {
+  const DEST = join(TMP, "clone-dest");
+
+  function seedSourceRepo() {
+    writeFileSync(join(REPO, "main.ts"), "export const x = 1;\n");
+    git(["add", "."]);
+    git(["commit", "-m", "init"]);
+    git(["branch", "-M", "main"]);
+  }
+
+  it("clones into a non-empty dir and redacts the persisted remote", () => {
+    seedSourceRepo();
+    mkdirSync(join(DEST, ".agent"), { recursive: true });
+    GitTools.clone(REPO, DEST, "main");
+    const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: DEST, encoding: "utf8",
+    }).stdout.trim();
+    expect(head).toBe("main");
+    const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: DEST, encoding: "utf8",
+    }).stdout.trim();
+    expect(remote).not.toContain("token");
+  });
+
+  it("throws a redacted error on a bad source", () => {
+    mkdirSync(DEST, { recursive: true });
+    expect(() => GitTools.clone("/nonexistent/repo-xyz", DEST, "main")).toThrow(/fetch failed/);
+  });
+
+  it("createBranch + currentBranch", () => {
+    seedSourceRepo();
+    const tools = makeTools();
+    tools.createBranch("projectos/run-abc123");
+    expect(tools.currentBranch()).toBe("projectos/run-abc123");
+  });
+
+  it("diffRange includes committed and uncommitted changes", () => {
+    seedSourceRepo();
+    const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO, encoding: "utf8" }).stdout.trim();
+    const tools = makeTools();
+    tools.createBranch("work");
+    writeFileSync(join(REPO, "feature.ts"), "export const y = 2;\n");
+    git(["add", "."]);
+    git(["commit", "-m", "add feature"]);
+    writeFileSync(join(REPO, "main.ts"), "export const x = 42;\n");
+    const diff = tools.diffRange(base);
+    expect(diff).toContain("feature.ts");
+    expect(diff).toContain("x = 42");
+  });
+});

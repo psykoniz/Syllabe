@@ -4,7 +4,7 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { Database } from "bun:sqlite";
 import { ProjectRun, defaultCreateMessage } from "@projectos/core";
-import { ensureRunMetaTable, setRunMeta, loadPromotedConfig } from "@projectos/core";
+import { ensureRunMetaTable, setRunMeta, loadPromotedConfig, redactGitUrl } from "@projectos/core";
 import { autoApprove, interactiveApproval } from "@projectos/policy";
 
 export const buildCommand = new Command("build")
@@ -20,6 +20,8 @@ export const buildCommand = new Command("build")
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .option("--browser-tools", "Enable Playwright browser automation tools", false)
   .option("--parallel <n>", "Run work units concurrently with this concurrency (>=2 enables)", "0")
+  .option("--repo <url-or-path>", "Existing git repository to work on (URL or local path)")
+  .option("--base-branch <name>", "Base branch to clone from", "main")
   .option("--harness-dir <path>", "Harness dir with promoted config (promotions.json)", "~/.projectos/harness")
   .action(async (opts) => {
     // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
@@ -32,8 +34,18 @@ export const buildCommand = new Command("build")
     setRunMeta(db, runId, "model", opts.modelOverride ?? "default");
     setRunMeta(db, runId, "startedAt", new Date().toISOString());
 
+    const workBranch = opts.repo ? `projectos/run-${runId.slice(0, 8)}` : undefined;
+    if (opts.repo) {
+      setRunMeta(db, runId, "git_url", redactGitUrl(opts.repo));
+      setRunMeta(db, runId, "base_branch", opts.baseBranch);
+      setRunMeta(db, runId, "work_branch", workBranch!);
+    }
+
     console.log(`\nProjectOS build — run ${runId}`);
     console.log(`Workspace: ${opts.workspace}`);
+    if (opts.repo) {
+      console.log(`Repository: ${redactGitUrl(opts.repo)} (base: ${opts.baseBranch}, work branch: ${workBranch})`);
+    }
     console.log(`Task: ${opts.task}\n`);
 
     const createMessage = await defaultCreateMessage();
@@ -65,6 +77,9 @@ export const buildCommand = new Command("build")
       sandboxImage: opts.sandboxImage,
       browserTools: opts.browserTools,
       parallelWorkUnits: parseInt(opts.parallel, 10) || undefined,
+      gitUrl: opts.repo,
+      baseBranch: opts.baseBranch,
+      workBranch,
     });
 
     try {

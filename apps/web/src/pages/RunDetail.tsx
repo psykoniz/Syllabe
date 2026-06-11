@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import type { RunDetail, TraceEvent } from "../types";
+import type { RunDetail, TraceEvent, DiffResponse } from "../types";
 import StateBadge from "../components/StateBadge";
 import { formatCost, formatDate, formatDuration, formatTokens } from "../utils";
 
@@ -18,6 +18,19 @@ export default function RunDetailPage() {
   // Replay mode state
   const [replayMode, setReplayMode] = useState(false);
   const [scrubberIndex, setScrubberIndex] = useState(0);
+
+  // Repo diff state
+  const [diffData, setDiffData] = useState<DiffResponse | null>(null);
+
+  const loadDiff = async () => {
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/runs/${id}/diff`);
+      if (res.ok) setDiffData((await res.json()) as DiffResponse);
+    } catch {
+      // diff is best-effort
+    }
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -41,6 +54,7 @@ export default function RunDetailPage() {
       }
     };
     load();
+    loadDiff();
 
     // SSE
     const es = new EventSource(`/api/runs/${id}/events`);
@@ -299,6 +313,45 @@ export default function RunDetailPage() {
               </div>
             )}
           </div>
+
+        {/* Changes — only for repo-backed runs */}
+          {run.git_url && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+                  Changes
+                  {diffData?.workBranch && (
+                    <span className="ml-2 font-mono text-xs text-blue-400 normal-case">{diffData.workBranch}</span>
+                  )}
+                </h2>
+                <button
+                  onClick={loadDiff}
+                  className="px-3 py-1 text-xs rounded bg-gray-800 border border-gray-700 text-gray-400 hover:bg-gray-700 transition-colors"
+                >
+                  ↻ Refresh
+                </button>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                {!diffData?.diff ? (
+                  <div className="px-4 py-8 text-center text-gray-600 text-sm">No changes yet</div>
+                ) : (
+                  <>
+                    {diffData.stat && (
+                      <pre className="px-4 py-3 text-xs text-gray-400 border-b border-gray-800 overflow-x-auto">{diffData.stat}</pre>
+                    )}
+                    <pre className="px-4 py-3 text-xs leading-relaxed overflow-x-auto max-h-[500px] overflow-y-auto">
+                      {diffData.diff.split("\n").map((line, i) => (
+                        <div key={i} className={diffLineClass(line)}>{line || " "}</div>
+                      ))}
+                    </pre>
+                    {diffData.truncated && (
+                      <div className="px-4 py-2 text-xs text-amber-400 border-t border-gray-800">Diff truncated (1 MB cap)</div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right column */}
@@ -368,6 +421,13 @@ export default function RunDetailPage() {
       </div>
     </div>
   );
+}
+
+function diffLineClass(line: string): string {
+  if (line.startsWith("+") && !line.startsWith("+++")) return "text-green-400";
+  if (line.startsWith("-") && !line.startsWith("---")) return "text-red-400";
+  if (line.startsWith("@@") || line.startsWith("diff --git")) return "text-gray-500";
+  return "text-gray-300";
 }
 
 function StatCard({ label, value }: { label: string; value: string }) {
