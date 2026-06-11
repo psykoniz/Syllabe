@@ -468,6 +468,8 @@ export class ProjectRun implements AgentHandler {
       model,
       inputTokens: result.usage.inputTokens,
       outputTokens: result.usage.outputTokens,
+      cacheReadTokens: result.usage.cacheReadTokens,
+      cacheWriteTokens: result.usage.cacheWriteTokens,
       durationMs: Date.now() - start,
     });
 

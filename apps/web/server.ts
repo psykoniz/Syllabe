@@ -37,6 +37,8 @@ interface TraceEvent {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   durationMs: number;
   meta?: Record<string, unknown>;
 }
@@ -133,15 +135,32 @@ const PRICE: Record<string, { input: number; output: number }> = {
   "claude-haiku-4-5":  { input: 1.0,  output: 5.0  },
 };
 
+// Prompt caching multipliers (× input price): read ≈ 0.1, write ≈ 1.25.
+const CACHE_READ_MULT = 0.1;
+const CACHE_WRITE_MULT = 1.25;
+
 function computeCostFromTraces(traces: TraceEvent[]) {
-  const byModel: Record<string, { inputTokens: number; outputTokens: number; usd: number }> = {};
+  const byModel: Record<
+    string,
+    { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; usd: number }
+  > = {};
   let totalUsd = 0;
   for (const t of traces) {
     const price = PRICE[t.model] ?? { input: 0, output: 0 };
-    const usd = (t.inputTokens / 1e6) * price.input + (t.outputTokens / 1e6) * price.output;
-    if (!byModel[t.model]) byModel[t.model] = { inputTokens: 0, outputTokens: 0, usd: 0 };
+    const cacheRead = t.cacheReadTokens ?? 0;
+    const cacheWrite = t.cacheWriteTokens ?? 0;
+    const usd =
+      (t.inputTokens / 1e6) * price.input +
+      (t.outputTokens / 1e6) * price.output +
+      (cacheRead / 1e6) * price.input * CACHE_READ_MULT +
+      (cacheWrite / 1e6) * price.input * CACHE_WRITE_MULT;
+    if (!byModel[t.model]) {
+      byModel[t.model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, usd: 0 };
+    }
     byModel[t.model].inputTokens += t.inputTokens;
     byModel[t.model].outputTokens += t.outputTokens;
+    byModel[t.model].cacheReadTokens += cacheRead;
+    byModel[t.model].cacheWriteTokens += cacheWrite;
     byModel[t.model].usd += usd;
     totalUsd += usd;
   }
