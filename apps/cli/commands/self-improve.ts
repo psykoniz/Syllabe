@@ -134,7 +134,7 @@ export const selfImproveCommand = new Command("self-improve")
   });
 
 /** Scan .projectos/ for failed run records and build FailurePattern list */
-function collectFailurePatterns(runsDir: string): FailurePattern[] {
+export function collectFailurePatterns(runsDir: string): FailurePattern[] {
   const tracePath = join(runsDir, "traces.jsonl");
   if (!existsSync(tracePath)) return [];
 
@@ -165,7 +165,7 @@ function collectFailurePatterns(runsDir: string): FailurePattern[] {
 }
 
 /** Derive failure patterns from baseline scores (0% pass rate = failure) */
-function collectFailurePatternsFromBaseline(baselinePath: string): FailurePattern[] {
+export function collectFailurePatternsFromBaseline(baselinePath: string): FailurePattern[] {
   if (!existsSync(baselinePath)) return [];
   try {
     const store = JSON.parse(readFileSync(baselinePath, "utf8")) as Array<{

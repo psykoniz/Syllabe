@@ -198,22 +198,43 @@ describe("failure pattern collection from traces.jsonl", () => {
   });
 });
 
-// ── helper: inline copy of collectFailurePatterns for unit testing ─────────────
+// ─── collectFailurePatternsFromBaseline (unit) ────────────────────────────────
+
+describe("failure pattern collection from baseline.json", () => {
+  it("returns empty array when baseline absent", () => {
+    expect(collectFailurePatternsFromBaseline(join(TMP, "missing.json"))).toHaveLength(0);
+  });
+
+  it("extracts escalation reason from failing task notes", () => {
+    const baselinePath = join(TMP, "bl.json");
+    mkdirSync(TMP, { recursive: true });
+    writeFileSync(baselinePath, JSON.stringify([{
+      version: 1,
+      date: "2026-06-11",
+      scores: [
+        { taskId: "task-03", passRate: 0, runs: [{ notes: "state=ESCALATED steps=16 escalation=max review cycles (2) exceeded" }], meanCostUsd: 0, worstCostUsd: 0, anySecretsLeaked: false, hasPendingLabels: false },
+        { taskId: "task-00", passRate: 1, runs: [{ notes: "state=COMPLETE" }], meanCostUsd: 0, worstCostUsd: 0, anySecretsLeaked: false, hasPendingLabels: false },
+      ],
+    }]), "utf8");
+
+    const patterns = collectFailurePatternsFromBaseline(baselinePath);
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].reason).toBe("max review cycles (2) exceeded");
+    expect(patterns[0].runId).toBe("baseline-v1");
+  });
+
+  it("only reads the latest baseline version", () => {
+    const baselinePath = join(TMP, "bl2.json");
+    mkdirSync(TMP, { recursive: true });
+    writeFileSync(baselinePath, JSON.stringify([
+      { version: 1, date: "d", scores: [{ taskId: "t1", passRate: 0, runs: [{ notes: "old failure" }] }] },
+      { version: 2, date: "d", scores: [{ taskId: "t1", passRate: 1, runs: [{ notes: "fixed" }] }] },
+    ]), "utf8");
+
+    expect(collectFailurePatternsFromBaseline(baselinePath)).toHaveLength(0);
+  });
+});
+
+// ── import the real implementations from the command module ────────────────────
 import { readFileSync } from "fs";
-function collectFailurePatternsForTest(runsDir: string): FailurePattern[] {
-  const tracePath = join(runsDir, "traces.jsonl");
-  if (!existsSync(tracePath)) return [];
-  try {
-    const lines = readFileSync(tracePath, "utf8").trim().split("\n").filter(Boolean);
-    const counts = new Map<string, FailurePattern>();
-    for (const line of lines) {
-      const event = JSON.parse(line) as { runId?: string; phase?: string; escalationReason?: string };
-      if (!event.escalationReason) continue;
-      const key = `${event.phase ?? "UNKNOWN"}:${event.escalationReason}`;
-      const existing = counts.get(key);
-      if (existing) { existing.count++; }
-      else { counts.set(key, { runId: event.runId ?? "unknown", state: event.phase ?? "UNKNOWN", reason: event.escalationReason, count: 1 }); }
-    }
-    return Array.from(counts.values());
-  } catch { return []; }
-}
+import { collectFailurePatterns as collectFailurePatternsForTest, collectFailurePatternsFromBaseline } from "./self-improve";
