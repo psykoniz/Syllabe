@@ -405,15 +405,15 @@ describe("runAgent — compaction integration", () => {
 });
 
 describe("reasoningParams", () => {
-  it("fable gets adaptive thinking at max effort", () => {
+  it("fable gets adaptive thinking, effort defaults to high", () => {
     expect(reasoningParams("claude-fable-5")).toEqual({
       thinking: { type: "adaptive" },
-      output_config: { effort: "max" },
+      output_config: { effort: "high" },
     });
   });
 
-  it("opus gets adaptive thinking at max effort", () => {
-    expect(reasoningParams("claude-opus-4-8")).toEqual({
+  it("opus honors an explicit max effort", () => {
+    expect(reasoningParams("claude-opus-4-8", "max")).toEqual({
       thinking: { type: "adaptive" },
       output_config: { effort: "max" },
     });

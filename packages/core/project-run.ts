@@ -19,7 +19,7 @@ import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
 import { runAgent } from "./agent-runner";
-import type { CreateMessageFn } from "./agent-runner";
+import type { CreateMessageFn, EffortLevel } from "./agent-runner";
 import { spawnSync } from "child_process";
 
 export interface ProjectRunConfig {
@@ -51,6 +51,14 @@ export interface ProjectRunConfig {
    *  mode; each unit runs its own implement→test⇄repair→review pipeline). */
   parallelWorkUnits?: number;
 }
+
+/** Reasoning effort per role: max only where deep reflection pays off.
+ *  CLARIFY (product-strategist) is mostly mechanical — high is enough. */
+const ROLE_EFFORT: Partial<Record<Role, EffortLevel>> = {
+  "architect": "max",
+  "reviewer":  "max",
+  "product-strategist": "high",
+};
 
 /** State → role mapping */
 const STATE_ROLE: Partial<Record<State, Role>> = {
@@ -456,6 +464,7 @@ export class ProjectRun implements AgentHandler {
         tools: extraTools.length > 0 ? [...TOOL_DEFINITIONS, ...extraTools] : undefined,
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
+        effort: ROLE_EFFORT[role],
         extraDispatcher,
       }
     );
