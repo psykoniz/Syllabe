@@ -13,6 +13,53 @@ export interface FsToolsOptions {
   logPath: string;
 }
 
+export interface EditOptions {
+  replaceAll?: boolean;
+}
+
+export interface EditResult {
+  replacements: number;
+  matchedVia: "exact" | "whitespace-normalized";
+}
+
+export interface GlobResult {
+  files: string[];
+  truncated: boolean;
+}
+
+export interface GrepMatch {
+  file: string;
+  line: number;
+  text: string;
+  context?: Array<{ line: number; text: string }>;
+}
+
+export interface GrepResult {
+  matches: GrepMatch[];
+  truncated: boolean;
+}
+
+const GLOB_DEFAULT_LIMIT = 500;
+const GREP_DEFAULT_MAX_MATCHES = 200;
+
+/** Locate windows of `oldLines` inside `contentLines` comparing with leading
+ *  whitespace stripped per line. Pure — exported for tests. */
+export function findNormalizedMatch(
+  contentLines: string[],
+  oldLines: string[]
+): Array<{ start: number; count: number }> {
+  const norm = (l: string) => l.replace(/^\s+/, "");
+  const target = oldLines.map(norm);
+  const hits: Array<{ start: number; count: number }> = [];
+  outer: for (let i = 0; i + target.length <= contentLines.length; i++) {
+    for (let j = 0; j < target.length; j++) {
+      if (norm(contentLines[i + j]) !== target[j]) continue outer;
+    }
+    hits.push({ start: i, count: target.length });
+  }
+  return hits;
+}
+
 function timed<T>(fn: () => T): { value: T; durationMs: number } {
   const start = Date.now();
   const value = fn();
@@ -62,46 +109,128 @@ export class FsTools {
     }
   }
 
-  edit(filePath: string, oldStr: string, newStr: string): void {
+  edit(filePath: string, oldStr: string, newStr: string, opts: EditOptions = {}): EditResult {
     const start = Date.now();
     try {
       const content = readFileSync(filePath, "utf8");
       const count = content.split(oldStr).length - 1;
-      if (count === 0) throw new Error(`String not found in ${filePath}`);
-      if (count > 1) throw new Error(`String not unique (${count} occurrences) in ${filePath}`);
-      writeFileSync(filePath, content.replace(oldStr, newStr), "utf8");
-      this.log("edit", { filePath }, Date.now() - start);
+
+      if (opts.replaceAll && count > 0) {
+        writeFileSync(filePath, content.split(oldStr).join(newStr), "utf8");
+        this.log("edit", { filePath, replaceAll: true, replacements: count }, Date.now() - start);
+        return { replacements: count, matchedVia: "exact" };
+      }
+
+      if (count === 1) {
+        writeFileSync(filePath, content.replace(oldStr, newStr), "utf8");
+        this.log("edit", { filePath }, Date.now() - start);
+        return { replacements: 1, matchedVia: "exact" };
+      }
+
+      const lines = content.split("\n");
+
+      if (count > 1) {
+        const hitLines: number[] = [];
+        const firstOld = oldStr.split("\n")[0];
+        lines.forEach((l, i) => { if (l.includes(firstOld)) hitLines.push(i + 1); });
+        throw new Error(
+          `String not unique (${count} occurrences) in ${filePath}` +
+          (hitLines.length > 0 ? ` — at lines: ${hitLines.slice(0, 10).join(", ")}` : "") +
+          `. Add surrounding context or use replace_all.`
+        );
+      }
+
+      // 0 exact matches — whitespace-normalized retry
+      const oldLines = oldStr.split("\n");
+      const windows = findNormalizedMatch(lines, oldLines);
+      if (windows.length === 1) {
+        const { start: ws, count: wc } = windows[0];
+        // Re-indent newStr by the leading-whitespace delta of the first line
+        const fileIndent = lines[ws].match(/^\s*/)?.[0] ?? "";
+        const oldIndent = oldLines[0].match(/^\s*/)?.[0] ?? "";
+        const newLines = newStr.split("\n").map((l) => {
+          if (l.startsWith(oldIndent)) return fileIndent + l.slice(oldIndent.length);
+          return l;
+        });
+        lines.splice(ws, wc, ...newLines);
+        writeFileSync(filePath, lines.join("\n"), "utf8");
+        this.log("edit", { filePath, matchedVia: "whitespace-normalized" }, Date.now() - start);
+        return { replacements: 1, matchedVia: "whitespace-normalized" };
+      }
+      if (windows.length > 1) {
+        throw new Error(
+          `String not found exactly, and whitespace-normalized match is ambiguous ` +
+          `(${windows.length} candidates at lines: ${windows.map((w) => w.start + 1).join(", ")}) in ${filePath}`
+        );
+      }
+
+      // No match at all — point at near misses
+      const norm = (l: string) => l.replace(/^\s+/, "");
+      const firstTarget = norm(oldLines.find((l) => norm(l).length > 0) ?? "");
+      const nearMisses: number[] = [];
+      if (firstTarget) {
+        lines.forEach((l, i) => { if (norm(l) === firstTarget) nearMisses.push(i + 1); });
+      }
+      throw new Error(
+        `String not found in ${filePath}.` +
+        (nearMisses.length > 0
+          ? ` Near misses at lines: ${nearMisses.slice(0, 10).join(", ")} (check whitespace).`
+          : "")
+      );
     } catch (e) {
       this.log("edit", { filePath }, Date.now() - start, (e as Error).message);
       throw e;
     }
   }
 
-  glob(pattern: string, baseDir: string): string[] {
+  glob(pattern: string, baseDir: string, opts: { limit?: number } = {}): GlobResult {
     const start = Date.now();
+    const limit = opts.limit ?? GLOB_DEFAULT_LIMIT;
     try {
-      const results = globSync(pattern, baseDir);
-      this.log("glob", { pattern, baseDir }, Date.now() - start);
-      return results;
+      const all = globSync(pattern, baseDir).sort();
+      const truncated = all.length > limit;
+      const files = truncated ? all.slice(0, limit) : all;
+      this.log("glob", { pattern, baseDir, found: all.length, truncated }, Date.now() - start);
+      return { files, truncated };
     } catch (e) {
       this.log("glob", { pattern, baseDir }, Date.now() - start, (e as Error).message);
       throw e;
     }
   }
 
-  grep(pattern: string, filePaths: string[]): Record<string, string[]> {
+  grep(
+    pattern: string,
+    filePaths: string[],
+    opts: { contextLines?: number; maxMatches?: number } = {}
+  ): GrepResult {
     const start = Date.now();
+    const maxMatches = opts.maxMatches ?? GREP_DEFAULT_MAX_MATCHES;
+    const contextLines = opts.contextLines ?? 0;
     try {
       const re = new RegExp(pattern);
-      const results: Record<string, string[]> = {};
-      for (const fp of filePaths) {
+      const matches: GrepMatch[] = [];
+      let truncated = false;
+      outer: for (const fp of filePaths) {
         if (!existsSync(fp)) continue;
         const lines = readFileSync(fp, "utf8").split("\n");
-        const matches = lines.filter((l) => re.test(l));
-        if (matches.length > 0) results[fp] = matches;
+        for (let i = 0; i < lines.length; i++) {
+          if (!re.test(lines[i])) continue;
+          if (matches.length >= maxMatches) {
+            truncated = true;
+            break outer;
+          }
+          const m: GrepMatch = { file: fp, line: i + 1, text: lines[i] };
+          if (contextLines > 0) {
+            m.context = [];
+            for (let c = Math.max(0, i - contextLines); c <= Math.min(lines.length - 1, i + contextLines); c++) {
+              if (c !== i) m.context.push({ line: c + 1, text: lines[c] });
+            }
+          }
+          matches.push(m);
+        }
       }
-      this.log("grep", { pattern, fileCount: filePaths.length }, Date.now() - start);
-      return results;
+      this.log("grep", { pattern, fileCount: filePaths.length, matchCount: matches.length, truncated }, Date.now() - start);
+      return { matches, truncated };
     } catch (e) {
       this.log("grep", { pattern }, Date.now() - start, (e as Error).message);
       throw e;

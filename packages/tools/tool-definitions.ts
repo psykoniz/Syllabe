@@ -60,13 +60,15 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: "edit_file",
-    description: "Replace an exact unique string in a file with new text.",
+    description:
+      "Replace an exact unique string in a file with new text. Falls back to a whitespace-normalized match when the exact string is not found. Use replace_all to replace every occurrence.",
     input_schema: {
       type: "object",
       properties: {
         path: { type: "string" },
-        old_string: { type: "string", description: "Exact string to find (must be unique)" },
+        old_string: { type: "string", description: "Exact string to find (must be unique unless replace_all)" },
         new_string: { type: "string", description: "Replacement text" },
+        replace_all: { type: "boolean", description: "Replace every occurrence instead of requiring uniqueness" },
       },
       required: ["path", "old_string", "new_string"],
     },
@@ -85,12 +87,14 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: "grep_files",
-    description: "Search for a regex pattern in the given files. Returns matching lines per file.",
+    description:
+      "Search for a regex pattern in the given files. Returns path:line: text matches (capped at 200).",
     input_schema: {
       type: "object",
       properties: {
         pattern: { type: "string", description: "Regex pattern to search for" },
         files: { type: "array", items: { type: "string" }, description: "File paths to search" },
+        context_lines: { type: "number", description: "Lines of context to show around each match" },
       },
       required: ["pattern", "files"],
     },
@@ -157,22 +161,46 @@ export function dispatchTool(
         });
         return ok("ok");
 
-      case "edit_file":
-        ctx.fs.edit(
+      case "edit_file": {
+        const r = ctx.fs.edit(
           resolvePath(input.path as string, ctx.workspace),
           input.old_string as string,
-          input.new_string as string
+          input.new_string as string,
+          { replaceAll: (input.replace_all as boolean) ?? false }
         );
-        return ok("ok");
+        return ok(`Edited ${input.path} (${r.replacements} replacement(s), ${r.matchedVia})`);
+      }
 
       case "glob_files": {
         const dir = input.dir ? resolvePath(input.dir as string, ctx.workspace) : ctx.workspace;
-        return ok(JSON.stringify(ctx.fs.glob(input.pattern as string, dir)));
+        const r = ctx.fs.glob(input.pattern as string, dir);
+        const body = r.files.join("\n") || "(no matches)";
+        return ok(r.truncated ? `${body}\n[truncated at ${r.files.length} files]` : body);
       }
 
       case "grep_files": {
         const files = (input.files as string[]).map((f) => resolvePath(f, ctx.workspace));
-        return ok(JSON.stringify(ctx.fs.grep(input.pattern as string, files)));
+        const r = ctx.fs.grep(input.pattern as string, files, {
+          contextLines: (input.context_lines as number) ?? 0,
+        });
+        const lines: string[] = [];
+        for (const m of r.matches) {
+          if (m.context) {
+            for (const c of m.context.filter((c) => c.line < m.line)) {
+              lines.push(`${m.file}:${c.line}- ${c.text}`);
+            }
+          }
+          lines.push(`${m.file}:${m.line}: ${m.text}`);
+          if (m.context) {
+            for (const c of m.context.filter((c) => c.line > m.line)) {
+              lines.push(`${m.file}:${c.line}- ${c.text}`);
+            }
+          }
+        }
+        const body = lines.join("\n") || "(no matches)";
+        return ok(
+          r.truncated ? `${body}\n[truncated: showing first ${r.matches.length} matches]` : body
+        );
       }
 
       case "bash": {
