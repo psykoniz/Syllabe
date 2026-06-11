@@ -23,16 +23,32 @@
         "commander": "^12.0.0",
       },
     },
+    "packages/agents": {
+      "name": "@projectos/agents",
+      "version": "0.0.1",
+    },
     "packages/core": {
       "name": "@projectos/core",
       "version": "0.0.1",
       "dependencies": {
         "@anthropic-ai/sdk": "latest",
+        "@projectos/memory": "*",
       },
+    },
+    "packages/evals": {
+      "name": "@projectos/evals",
+      "version": "0.0.1",
+    },
+    "packages/memory": {
+      "name": "@projectos/memory",
+      "version": "0.0.1",
     },
     "packages/policy": {
       "name": "@projectos/policy",
       "version": "0.0.1",
+      "dependencies": {
+        "minimatch": "^10.2.5",
+      },
     },
     "packages/router": {
       "name": "@projectos/router",
@@ -52,9 +68,15 @@
 
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
 
+    "@projectos/agents": ["@projectos/agents@workspace:packages/agents"],
+
     "@projectos/cli": ["@projectos/cli@workspace:apps/cli"],
 
     "@projectos/core": ["@projectos/core@workspace:packages/core"],
+
+    "@projectos/evals": ["@projectos/evals@workspace:packages/evals"],
+
+    "@projectos/memory": ["@projectos/memory@workspace:packages/memory"],
 
     "@projectos/policy": ["@projectos/policy@workspace:packages/policy"],
 
