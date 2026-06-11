@@ -3,14 +3,14 @@ import { resolveModel, fallbackModel, MODEL_IDS, DECISION_ROLES } from "./model-
 import type { Role } from "./model-router";
 
 describe("resolveModel", () => {
-  it("product-strategist → fable", () => {
-    expect(resolveModel("product-strategist")).toBe(MODEL_IDS.fable);
+  it("product-strategist → opus", () => {
+    expect(resolveModel("product-strategist")).toBe(MODEL_IDS.opus);
   });
-  it("architect → fable", () => {
-    expect(resolveModel("architect")).toBe(MODEL_IDS.fable);
+  it("architect → opus", () => {
+    expect(resolveModel("architect")).toBe(MODEL_IDS.opus);
   });
-  it("reviewer → fable", () => {
-    expect(resolveModel("reviewer")).toBe(MODEL_IDS.fable);
+  it("reviewer → opus", () => {
+    expect(resolveModel("reviewer")).toBe(MODEL_IDS.opus);
   });
   it("implementer → sonnet", () => {
     expect(resolveModel("implementer")).toBe(MODEL_IDS.sonnet);
@@ -21,14 +21,14 @@ describe("resolveModel", () => {
   it("memory-curator → haiku", () => {
     expect(resolveModel("memory-curator")).toBe(MODEL_IDS.haiku);
   });
-  it("harness-optimizer analysis → fable", () => {
-    expect(resolveModel("harness-optimizer", "analysis")).toBe(MODEL_IDS.fable);
+  it("harness-optimizer analysis → opus", () => {
+    expect(resolveModel("harness-optimizer", "analysis")).toBe(MODEL_IDS.opus);
   });
   it("harness-optimizer implementation → sonnet", () => {
     expect(resolveModel("harness-optimizer", "implementation")).toBe(MODEL_IDS.sonnet);
   });
-  it("harness-optimizer default (no phase) → fable", () => {
-    expect(resolveModel("harness-optimizer")).toBe(MODEL_IDS.fable);
+  it("harness-optimizer default (no phase) → opus", () => {
+    expect(resolveModel("harness-optimizer")).toBe(MODEL_IDS.opus);
   });
 });
 

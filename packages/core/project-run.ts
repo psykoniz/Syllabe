@@ -19,7 +19,7 @@ import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
 import { runAgent } from "./agent-runner";
-import type { CreateMessageFn } from "./agent-runner";
+import type { CreateMessageFn, EffortLevel } from "./agent-runner";
 import { spawnSync } from "child_process";
 
 export interface ProjectRunConfig {
@@ -51,6 +51,14 @@ export interface ProjectRunConfig {
    *  mode; each unit runs its own implement→test⇄repair→review pipeline). */
   parallelWorkUnits?: number;
 }
+
+/** Reasoning effort per role: max only where deep reflection pays off.
+ *  CLARIFY (product-strategist) is mostly mechanical — high is enough. */
+const ROLE_EFFORT: Partial<Record<Role, EffortLevel>> = {
+  "architect": "max",
+  "reviewer":  "max",
+  "product-strategist": "high",
+};
 
 /** State → role mapping */
 const STATE_ROLE: Partial<Record<State, Role>> = {
@@ -416,9 +424,12 @@ export class ProjectRun implements AgentHandler {
   private async callAgent(role: Role, prompt: string) {
     // modelOverride exists to substitute unavailable premium models (fable);
     // it must never upgrade the cost of roles already on a cheaper tier (haiku).
+    // With a non-Anthropic provider, the router's claude-* ids don't exist —
+    // the override applies to every role.
     const resolved = resolveModel(role);
+    const nonAnthropicProvider = process.env.PROJECTOS_PROVIDER === "openai";
     const model =
-      this.cfg.modelOverride && resolved.includes("fable")
+      this.cfg.modelOverride && (nonAnthropicProvider || resolved.includes("fable"))
         ? this.cfg.modelOverride
         : resolved;
     const system =
@@ -456,6 +467,7 @@ export class ProjectRun implements AgentHandler {
         tools: extraTools.length > 0 ? [...TOOL_DEFINITIONS, ...extraTools] : undefined,
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
+        effort: ROLE_EFFORT[role],
         extraDispatcher,
       }
     );
@@ -468,6 +480,8 @@ export class ProjectRun implements AgentHandler {
       model,
       inputTokens: result.usage.inputTokens,
       outputTokens: result.usage.outputTokens,
+      cacheReadTokens: result.usage.cacheReadTokens,
+      cacheWriteTokens: result.usage.cacheWriteTokens,
       durationMs: Date.now() - start,
     });
 

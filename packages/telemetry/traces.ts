@@ -9,6 +9,10 @@ export interface TraceEvent {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens served from the prompt cache (billed at ~0.1× input price) */
+  cacheReadTokens?: number;
+  /** Tokens written to the prompt cache (billed at ~1.25× input price) */
+  cacheWriteTokens?: number;
   durationMs: number;
   meta?: Record<string, unknown>;
 }

@@ -78,12 +78,27 @@ function openDb(path: string): Database {
 }
 
 export async function defaultCreateMessage(): Promise<CreateMessageFn> {
+  // PROJECTOS_PROVIDER=openai (or having only an OpenAI key) routes every
+  // model call through the OpenAI-compatible adapter instead of Anthropic.
+  const wantsOpenAi =
+    process.env.PROJECTOS_PROVIDER === "openai" ||
+    (!!process.env.OPENAI_API_KEY &&
+      !process.env.ANTHROPIC_API_KEY &&
+      !process.env.ANTHROPIC_AUTH_TOKEN);
+  if (wantsOpenAi) {
+    const { openAiCreateMessage } = await import("./openai-adapter");
+    return openAiCreateMessage();
+  }
+
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   return async (params) => {
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        // The SDK response is passed through structurally — `usage` keeps
+        // cache_read_input_tokens / cache_creation_input_tokens when the
+        // provider returns them (see ChatUsage in agent-runner.ts).
         return await client.messages.create(params as never) as unknown as ReturnType<CreateMessageFn>;
       } catch (e: unknown) {
         const status = (e as { status?: number }).status;

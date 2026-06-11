@@ -26,10 +26,12 @@ export const DECISION_ROLES = new Set<Role>([
   "reviewer",
 ]);
 
+// Reasoning-heavy roles run on opus (fable is preferred but unavailable on
+// some proxies; opus-4.8 is the reliable premium tier).
 const ROLE_TIER: Record<Exclude<Role, "harness-optimizer">, ModelTier> = {
-  "product-strategist": "fable",
-  "architect":          "fable",
-  "reviewer":           "fable",
+  "product-strategist": "opus",
+  "architect":          "opus",
+  "reviewer":           "opus",
   "implementer":        "sonnet",
   "test-engineer":      "sonnet",
   "memory-curator":     "haiku",
@@ -42,7 +44,7 @@ const FALLBACK_TIER: Partial<Record<ModelTier, ModelTier>> = {
 
 export function resolveModel(role: Role, phase?: HarnessOptimizerPhase): ModelId {
   if (role === "harness-optimizer") {
-    return MODEL_IDS[phase === "implementation" ? "sonnet" : "fable"];
+    return MODEL_IDS[phase === "implementation" ? "sonnet" : "opus"];
   }
   return MODEL_IDS[ROLE_TIER[role]];
 }
