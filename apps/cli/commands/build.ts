@@ -20,7 +20,9 @@ export const buildCommand = new Command("build")
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .option("--browser-tools", "Enable Playwright browser automation tools", false)
   .action(async (opts) => {
-    const runId = randomUUID();
+    // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
+    // run id so it can track the run it just launched.
+    const runId = process.env.PROJECTOS_RUN_ID ?? randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
     const db = new Database(opts.db, { create: true });
     ensureRunMetaTable(db);

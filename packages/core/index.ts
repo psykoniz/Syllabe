@@ -25,6 +25,8 @@ export { runAgentLoop } from "./agent-loop";
 export type { AgentHandler, AgentLoopOptions, LoopResult } from "./agent-loop";
 export { runWorkUnit } from "./task-runner";
 export type { TaskExecutor, TaskResult, TaskRunnerOptions } from "./task-runner";
+export { runWorkUnitsParallel } from "./parallel-runner";
+export type { ParallelWorkUnit, ParallelRunnerOptions, ParallelRunResult } from "./parallel-runner";
 export { writeCheckpoint, loadCheckpoints, loadLatestCheckpoint, ensureCheckpointTable } from "./checkpoint";
 export type { CheckpointRow } from "./checkpoint";
 export { openDb, ensureRunMetaTable, setRunMeta } from "./session-db";
