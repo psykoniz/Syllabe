@@ -27,6 +27,7 @@
       "name": "@projectos/web",
       "version": "0.0.1",
       "dependencies": {
+        "@projectos/core": "*",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-router-dom": "^6.27.0",
