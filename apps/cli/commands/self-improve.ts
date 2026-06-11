@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { mkdirSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { HarnessOptimizer, validateCandidateConfig } from "@projectos/agents";
-import type { FailurePattern } from "@projectos/agents";
+import type { FailurePattern, CandidateConfig } from "@projectos/agents";
 import { CandidateRunner, BaselineStore, Frontier, aggregateScores } from "@projectos/evals";
 import type { BenchmarkTask } from "@projectos/evals";
 
@@ -40,7 +40,12 @@ export const selfImproveCommand = new Command("self-improve")
 
     const optimizer = new HarnessOptimizer();
     const sorted = optimizer.analyzeFailures(patterns);
-    const proposal = optimizer.propose(sorted);
+    const rejectionsPath = join(harnessDir, "rejections.json");
+    const rejectedConfigs = loadRejections(rejectionsPath);
+    if (rejectedConfigs.length > 0) {
+      console.log(`Known rejected candidates: ${rejectedConfigs.length}`);
+    }
+    const proposal = optimizer.propose(sorted, rejectedConfigs);
 
     console.log(`\nProposal: ${proposal.rationale}`);
     console.log(`Change:   ${JSON.stringify(proposal.change)}`);
@@ -147,10 +152,28 @@ export const selfImproveCommand = new Command("self-improve")
       console.log(`\nPromoted candidate ${candidateId}.`);
       if (record.adrPath) console.log(`ADR written: ${record.adrPath}`);
     } else {
+      recordRejection(rejectionsPath, proposal.change);
       console.log("\nCandidate rejected — regressions detected or secrets leaked.");
+      console.log(`Rejection recorded: ${rejectionsPath}`);
       process.exit(1);
     }
   });
+
+function loadRejections(path: string): CandidateConfig[] {
+  if (!existsSync(path)) return [];
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+function recordRejection(path: string, config: CandidateConfig): void {
+  const list = loadRejections(path);
+  list.push(config);
+  mkdirSync(join(path, ".."), { recursive: true });
+  require("fs").writeFileSync(path, JSON.stringify(list, null, 2), "utf8");
+}
 
 /** Scan .projectos/ for failed run records and build FailurePattern list */
 export function collectFailurePatterns(runsDir: string): FailurePattern[] {

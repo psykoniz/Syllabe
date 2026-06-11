@@ -55,7 +55,7 @@ export class HarnessOptimizer {
     return sorted;
   }
 
-  propose(patterns: FailurePattern[]): OptimizerProposal {
+  propose(patterns: FailurePattern[], rejectedConfigs: CandidateConfig[] = []): OptimizerProposal {
     if (patterns.length === 0) {
       return {
         rationale: "No failure patterns detected; no change proposed.",
@@ -65,7 +65,29 @@ export class HarnessOptimizer {
     }
     // Target the single most frequent pattern
     const top = patterns[0];
-    const change = buildChangeForPattern(top);
+    let change = buildChangeForPattern(top);
+
+    // Never re-propose a config that a prior benchmark/re-validation rejected.
+    // For review-convergence failures, fall back to the prompt-scope candidate.
+    if (isRejected(change, rejectedConfigs)) {
+      const isReviewPattern = top.state === "REVIEW" || top.reason.includes("review");
+      const fallback: CandidateConfig = isReviewPattern
+        ? { systemPrompts: { implementer: IMPLEMENTER_CONVERGENCE_PROMPT } }
+        : {};
+      if (isRejected(fallback, rejectedConfigs)) {
+        return {
+          rationale: `All in-scope candidates for "${top.reason}" were previously rejected; escalate to human.`,
+          change: {},
+          targetPatterns: [top.reason],
+        };
+      }
+      return {
+        rationale: `Prior candidate for "${top.reason}" was rejected after re-validation; proposing prompt-scope fallback.`,
+        change: fallback,
+        targetPatterns: [top.reason],
+      };
+    }
+
     return {
       rationale: `Targeting most frequent failure: ${top.reason} in state ${top.state} (${top.count} occurrences)`,
       change,
@@ -107,6 +129,11 @@ function buildChangeForPattern(pattern: FailurePattern): CandidateConfig {
   }
   // Default: no structural change possible within v1 scope
   return {};
+}
+
+function isRejected(change: CandidateConfig, rejected: CandidateConfig[]): boolean {
+  const key = JSON.stringify(change);
+  return rejected.some((r) => JSON.stringify(r) === key);
 }
 
 function isStringRecord(v: unknown): v is Record<string, string> {

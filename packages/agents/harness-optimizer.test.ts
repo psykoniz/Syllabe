@@ -259,3 +259,32 @@ describe("HarnessOptimizer — escalated review failures target prompts", () => 
     expect(proposal.change.systemPrompts).toBeUndefined();
   });
 });
+
+describe("HarnessOptimizer — rejected candidate memory", () => {
+  it("falls back to prompt-scope candidate when loopBounds was rejected", () => {
+    const opt = new HarnessOptimizer();
+    const proposal = opt.propose(
+      [{ runId: "r1", state: "REVIEW", reason: "max review cycles (2) exceeded", count: 1 }],
+      [{ loopBounds: { maxReview: 3 } }]
+    );
+    expect(proposal.change.systemPrompts?.implementer).toBeDefined();
+    expect(proposal.change.loopBounds).toBeUndefined();
+    expect(proposal.rationale).toContain("rejected");
+  });
+
+  it("escalates with empty change when all candidates are rejected", () => {
+    const opt = new HarnessOptimizer();
+    const proposal = opt.propose(
+      [{ runId: "r1", state: "REVIEW", reason: "max review cycles (2) exceeded", count: 1 }],
+      [
+        { loopBounds: { maxReview: 3 } },
+        opt.propose(
+          [{ runId: "r1", state: "REVIEW", reason: "max review cycles (2) exceeded", count: 1 }],
+          [{ loopBounds: { maxReview: 3 } }]
+        ).change,
+      ]
+    );
+    expect(proposal.change).toEqual({});
+    expect(proposal.rationale).toContain("escalate to human");
+  });
+});
