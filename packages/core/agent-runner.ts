@@ -46,12 +46,19 @@ export interface ChatResponse {
   usage: ChatUsage;
 }
 
+export interface SystemBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 export interface CreateMessageParams {
   model: string;
   max_tokens: number;
-  system?: string;
+  /** String or content blocks — blocks allow cache_control on the prefix */
+  system?: string | SystemBlock[];
   messages: MessageParam[];
-  tools?: ToolDef[];
+  tools?: (ToolDef & { cache_control?: { type: "ephemeral" } })[];
 }
 
 export type CreateMessageFn = (params: CreateMessageParams) => Promise<ChatResponse>;
@@ -193,13 +200,25 @@ export async function runAgent(
   let outputTokens = 0;
   let finalText = "";
 
+  // Prompt caching: mark the static prefix (tools + system) as cacheable so
+  // repeated turns bill the prefix at cache-read rates instead of full price.
+  const tools = [...(opts.tools ?? TOOL_DEFINITIONS)] as (ToolDef & {
+    cache_control?: { type: "ephemeral" };
+  })[];
+  if (tools.length > 0) {
+    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+  }
+  const system: SystemBlock[] | undefined = opts.system
+    ? [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }]
+    : undefined;
+
   for (let turn = 1; turn <= maxIterations; turn++) {
     const response = await opts.createMessage({
       model: opts.model,
       max_tokens: opts.maxTokensPerTurn ?? 8192,
-      system: opts.system,
+      system,
       messages,
-      tools: opts.tools ?? TOOL_DEFINITIONS,
+      tools,
     });
 
     inputTokens += response.usage.input_tokens;
