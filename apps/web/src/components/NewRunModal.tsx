@@ -14,7 +14,7 @@ interface Props {
 export default function NewRunModal({ onClose }: Props) {
   const [task, setTask] = useState("");
   const [model, setModel] = useState("claude-sonnet-4-6");
-  const [autoYes, setAutoYes] = useState(false);
+  const [autoYes, setAutoYes] = useState(true);
   const [sandbox, setSandbox] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -111,17 +111,17 @@ export default function RunDetailPage() {
   const displayEvents = replayMode ? liveEvents.slice(0, scrubberIndex + 1) : liveEvents;
   const maxIndex = Math.max(0, liveEvents.length - 1);
 
-  // Cumulative stats at current scrubber position
-  const MODEL_COSTS: Record<string, { input: number; output: number }> = {
-    "claude-fable-5": { input: 10, output: 50 },
-    "claude-opus-4-8": { input: 5, output: 25 },
-    "claude-sonnet-4-6": { input: 3, output: 15 },
-    "claude-haiku-4-5": { input: 1, output: 5 },
+  // Price table kept in sync with @projectos/telemetry MODEL_PRICES
+  const MODEL_PRICES: Record<string, [number, number]> = {
+    "claude-fable-5":    [10, 50],
+    "claude-opus-4-8":   [5,  25],
+    "claude-sonnet-4-6": [3,  15],
+    "claude-haiku-4-5":  [1,   5],
   };
 
   function calcEventCost(model: string, inputTokens: number, outputTokens: number): number {
-    const rates = MODEL_COSTS[model] ?? { input: 3, output: 15 };
-    return (inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output;
+    const [inRate, outRate] = MODEL_PRICES[model] ?? [3, 15];
+    return (inputTokens / 1_000_000) * inRate + (outputTokens / 1_000_000) * outRate;
   }
 
   const cumStats = displayEvents.reduce(
