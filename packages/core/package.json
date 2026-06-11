@@ -1,0 +1,10 @@
+{
+  "name": "@projectos/core",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.ts",
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@projectos/memory": "*"
+  }
+}

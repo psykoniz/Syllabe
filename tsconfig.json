@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["@types/bun"],
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@projectos/core": ["packages/core/index.ts"],
+      "@projectos/telemetry": ["packages/telemetry/index.ts"],
+      "@projectos/router": ["packages/router/index.ts"],
+      "@projectos/tools": ["packages/tools/index.ts"],
+      "@projectos/policy": ["packages/policy/index.ts"],
+      "@projectos/agents": ["packages/agents/index.ts"],
+      "@projectos/memory": ["packages/memory/index.ts"],
+      "@projectos/evals": ["packages/evals/index.ts"]
+    }
+  },
+  "include": ["apps/**/*", "packages/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

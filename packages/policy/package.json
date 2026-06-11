@@ -1,0 +1,9 @@
+{
+  "name": "@projectos/policy",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.ts",
+  "dependencies": {
+    "minimatch": "^10.2.5"
+  }
+}

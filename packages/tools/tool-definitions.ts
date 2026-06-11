@@ -1,0 +1,206 @@
+import { FsTools } from "./filesystem/fs-tools";
+import { BashTool } from "./shell/bash";
+import { GitTools } from "./git/git-tools";
+
+// Self-contained tool schema — structurally compatible with the Anthropic
+// Messages API `tools` parameter. packages/tools stays SDK-free.
+export interface ToolDef {
+  name: string;
+  description: string;
+  input_schema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+export interface ToolContext {
+  fs: FsTools;
+  bash: BashTool;
+  git: GitTools;
+  workspace: string;
+  /** Current git branch, used by the permission layer for git:commit rules */
+  branch?: () => string;
+}
+
+export interface ToolDispatchResult {
+  content: string;
+  isError: boolean;
+}
+
+export const TOOL_DEFINITIONS: ToolDef[] = [
+  {
+    name: "read_file",
+    description: "Read the contents of a file at the given path.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative file path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Write content to a file. Refuses to overwrite unless overwrite is true.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        overwrite: { type: "boolean", description: "Allow overwriting existing file" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "edit_file",
+    description: "Replace an exact unique string in a file with new text.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        old_string: { type: "string", description: "Exact string to find (must be unique)" },
+        new_string: { type: "string", description: "Replacement text" },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+  },
+  {
+    name: "glob_files",
+    description: "Find files matching a glob pattern under a base directory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "Glob pattern e.g. **/*.ts" },
+        dir: { type: "string", description: "Base directory (defaults to workspace)" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "grep_files",
+    description: "Search for a regex pattern in the given files. Returns matching lines per file.",
+    input_schema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "Regex pattern to search for" },
+        files: { type: "array", items: { type: "string" }, description: "File paths to search" },
+      },
+      required: ["pattern", "files"],
+    },
+  },
+  {
+    name: "bash",
+    description: "Execute a bash command in the workspace directory (30s timeout).",
+    input_schema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Shell command to run" },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "git_status",
+    description: "Show the git working tree status.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "git_diff",
+    description: "Show git diff of working tree or staged changes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        staged: { type: "boolean", description: "Show staged diff instead of working tree" },
+      },
+    },
+  },
+  {
+    name: "git_commit",
+    description: "Stage specific files and create a git commit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        files: { type: "array", items: { type: "string" }, description: "Files to stage" },
+        message: { type: "string", description: "Commit message" },
+      },
+      required: ["files", "message"],
+    },
+  },
+];
+
+/** Resolve a model-supplied path against the workspace if it is relative. */
+function resolvePath(p: string, workspace: string): string {
+  const { resolve, isAbsolute } = require("path");
+  return isAbsolute(p) ? p : resolve(workspace, p);
+}
+
+export function dispatchTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  ctx: ToolContext
+): ToolDispatchResult {
+  try {
+    switch (toolName) {
+      case "read_file":
+        return ok(ctx.fs.read(resolvePath(input.path as string, ctx.workspace)));
+
+      case "write_file":
+        ctx.fs.write(resolvePath(input.path as string, ctx.workspace), input.content as string, {
+          overwrite: (input.overwrite as boolean) ?? false,
+        });
+        return ok("ok");
+
+      case "edit_file":
+        ctx.fs.edit(
+          resolvePath(input.path as string, ctx.workspace),
+          input.old_string as string,
+          input.new_string as string
+        );
+        return ok("ok");
+
+      case "glob_files": {
+        const dir = input.dir ? resolvePath(input.dir as string, ctx.workspace) : ctx.workspace;
+        return ok(JSON.stringify(ctx.fs.glob(input.pattern as string, dir)));
+      }
+
+      case "grep_files": {
+        const files = (input.files as string[]).map((f) => resolvePath(f, ctx.workspace));
+        return ok(JSON.stringify(ctx.fs.grep(input.pattern as string, files)));
+      }
+
+      case "bash": {
+        const r = ctx.bash.run(input.command as string);
+        const out = [
+          r.stdout,
+          r.stderr ? `[stderr] ${r.stderr}` : "",
+          r.exitCode !== 0 ? `[exit ${r.exitCode}]` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return { content: out || "(no output)", isError: r.exitCode !== 0 };
+      }
+
+      case "git_status":
+        return ok(ctx.git.status());
+
+      case "git_diff":
+        return ok(ctx.git.diff((input.staged as boolean) ?? false));
+
+      case "git_commit": {
+        const r = ctx.git.commit(input.files as string[], input.message as string);
+        return ok(`committed ${r.sha}: ${r.message}`);
+      }
+
+      default:
+        return { content: `Unknown tool: ${toolName}`, isError: true };
+    }
+  } catch (e) {
+    return { content: `error: ${(e as Error).message}`, isError: true };
+  }
+}
+
+function ok(content: string): ToolDispatchResult {
+  return { content, isError: false };
+}

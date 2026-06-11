@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.projectos/
+*.db
+*.db-journal
+# eval run outputs — keep baseline.json but not per-run results
+evals/results/*/
+evals/results/*.json
+!evals/results/baseline.json
