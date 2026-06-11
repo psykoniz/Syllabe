@@ -240,3 +240,38 @@ describe("formatScoreTable", () => {
     expect(table).toContain("FAIL(secrets)");
   });
 });
+
+describe("costGuardAllows", () => {
+  const { costGuardAllows } = require("./frontier");
+  const cmp = (delta: number, baseCost: number, candCost: number) => [{
+    taskId: "t", basePassRate: 1, candidatePassRate: 1 + delta, delta,
+    costDelta: candCost - baseCost, baseMeanCostUsd: baseCost,
+    candidateMeanCostUsd: candCost, promoted: true,
+  }];
+
+  it("allows equal cost at equal pass rate", () => {
+    expect(costGuardAllows(cmp(0, 1.0, 1.0), 0.2)).toBe(true);
+  });
+
+  it("allows up to +20% cost at equal pass rate", () => {
+    expect(costGuardAllows(cmp(0, 1.0, 1.19), 0.2)).toBe(true);
+  });
+
+  it("rejects +50% cost at equal pass rate (silent cost drift)", () => {
+    expect(costGuardAllows(cmp(0, 1.0, 1.5), 0.2)).toBe(false);
+  });
+
+  it("pass-rate gain widens the tolerance (2:1 exchange rate)", () => {
+    // +0.10 mean pass rate → +20% extra allowance → 1.0 * 1.4 ceiling
+    expect(costGuardAllows(cmp(0.10, 1.0, 1.39), 0.2)).toBe(true);
+    expect(costGuardAllows(cmp(0.10, 1.0, 1.45), 0.2)).toBe(false);
+  });
+
+  it("pass-rate regression does not shrink below the base ratio", () => {
+    expect(costGuardAllows(cmp(-0.5, 1.0, 1.19), 0.2)).toBe(true);
+  });
+
+  it("no cost data (zero baseline) passes the guard", () => {
+    expect(costGuardAllows(cmp(0, 0, 0), 0.2)).toBe(true);
+  });
+});
