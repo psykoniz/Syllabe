@@ -32,3 +32,5 @@ export type { CheckpointRow } from "./checkpoint";
 export { openDb, ensureRunMetaTable, setRunMeta } from "./session-db";
 export { RunReplay } from "@projectos/replay";
 export type { ReplayEvent, ReplaySummary } from "@projectos/replay";
+export { loadPromotedConfig } from "./promoted-config";
+export type { PromotedConfig } from "./promoted-config";

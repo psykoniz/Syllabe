@@ -168,6 +168,12 @@ export class ProjectRun implements AgentHandler {
     const prompt = buildStatePrompt("DESIGN", this.cfg.task, {
       context: interviewContent,
       instructions: [
+        "SCOPE RULE — the task description above is the single source of truth for scope.",
+        "The interview answers are generic defaults: apply them ONLY where the task actually",
+        "needs them. Do NOT add authentication, databases, deployment targets, or any feature",
+        "the task does not explicitly require. A trivial task gets a trivial design with 1-2",
+        "work units; never pad the plan to look more complete.",
+        "",
         "Generate 4 blueprint files for this project. For each file, call write_file with the exact path shown:",
         `  ${this.agentDir}/product.md          — product vision, users, problems solved, success metrics`,
         `  ${this.agentDir}/architecture.md     — system design, tech stack, key components`,
