@@ -15,6 +15,10 @@ export default function RunDetailPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const timelineEndRef = useRef<HTMLDivElement>(null);
 
+  // Replay mode state
+  const [replayMode, setReplayMode] = useState(false);
+  const [scrubberIndex, setScrubberIndex] = useState(0);
+
   useEffect(() => {
     if (!id) return;
 
@@ -26,6 +30,10 @@ export default function RunDetailPage() {
         setDetail(data);
         // Seed live events from initial load
         setLiveEvents(data.traces);
+        // Initialize scrubber to last event
+        if (data.traces.length > 0) {
+          setScrubberIndex(data.traces.length - 1);
+        }
       } catch (e) {
         setError(String(e));
       } finally {
@@ -49,7 +57,10 @@ export default function RunDetailPage() {
           setLiveEvents((prev) => {
             const exists = prev.some((e) => e.ts === trace.ts && e.phase === trace.phase);
             if (exists) return prev;
-            return [...prev, trace];
+            const next = [...prev, trace];
+            // Advance scrubber in live mode
+            setScrubberIndex(next.length - 1);
+            return next;
           });
         }
       } catch {
@@ -66,10 +77,12 @@ export default function RunDetailPage() {
     };
   }, [id]);
 
-  // Auto-scroll timeline
+  // Auto-scroll timeline in live mode
   useEffect(() => {
-    timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [liveEvents]);
+    if (!replayMode) {
+      timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [liveEvents, replayMode]);
 
   if (loading) {
     return (
@@ -94,6 +107,32 @@ export default function RunDetailPage() {
 
   const { run, checkpoints, cost } = detail;
 
+  // Replay helpers
+  const displayEvents = replayMode ? liveEvents.slice(0, scrubberIndex + 1) : liveEvents;
+  const maxIndex = Math.max(0, liveEvents.length - 1);
+
+  // Cumulative stats at current scrubber position
+  const MODEL_COSTS: Record<string, { input: number; output: number }> = {
+    "claude-fable-5": { input: 10, output: 50 },
+    "claude-opus-4-8": { input: 5, output: 25 },
+    "claude-sonnet-4-6": { input: 3, output: 15 },
+    "claude-haiku-4-5": { input: 1, output: 5 },
+  };
+
+  function calcEventCost(model: string, inputTokens: number, outputTokens: number): number {
+    const rates = MODEL_COSTS[model] ?? { input: 3, output: 15 };
+    return (inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output;
+  }
+
+  const cumStats = displayEvents.reduce(
+    (acc, ev) => ({
+      inputTokens: acc.inputTokens + ev.inputTokens,
+      outputTokens: acc.outputTokens + ev.outputTokens,
+      costUsd: acc.costUsd + calcEventCost(ev.model, ev.inputTokens, ev.outputTokens),
+    }),
+    { inputTokens: 0, outputTokens: 0, costUsd: 0 }
+  );
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
       {/* Header */}
@@ -108,7 +147,7 @@ export default function RunDetailPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-mono text-gray-300">{id}</h1>
             <StateBadge state={run.state} />
-            {sseConnected && (
+            {sseConnected && !replayMode && (
               <span className="flex items-center gap-1.5 text-xs text-green-400">
                 <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
                 Live
@@ -118,6 +157,32 @@ export default function RunDetailPage() {
           {run.escalation_reason && (
             <p className="text-sm text-red-400 mt-1">{run.escalation_reason}</p>
           )}
+        </div>
+        {/* Live / Replay toggle */}
+        <div className="flex items-center gap-1 bg-gray-900 border border-gray-700 rounded-lg p-1">
+          <button
+            onClick={() => setReplayMode(false)}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              !replayMode
+                ? "bg-green-700 text-green-100"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Live
+          </button>
+          <button
+            onClick={() => {
+              setReplayMode(true);
+              setScrubberIndex(maxIndex);
+            }}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              replayMode
+                ? "bg-amber-700 text-amber-100"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Replay
+          </button>
         </div>
       </div>
 
@@ -134,19 +199,85 @@ export default function RunDetailPage() {
         <StatCard label="Work Unit" value={String(run.work_unit_index + 1)} />
       </div>
 
+      {/* Replay controls */}
+      {replayMode && liveEvents.length > 0 && (
+        <div className="bg-gray-900 border border-amber-800/50 rounded-xl px-4 py-3 space-y-3">
+          {/* Mini summary bar */}
+          <div className="flex items-center gap-6 text-xs text-gray-400">
+            <span className="text-amber-300 font-medium">
+              Event {scrubberIndex + 1} / {liveEvents.length}
+            </span>
+            <span>
+              In: <span className="text-gray-200 tabular-nums">{formatTokens(cumStats.inputTokens)}</span>
+            </span>
+            <span>
+              Out: <span className="text-gray-200 tabular-nums">{formatTokens(cumStats.outputTokens)}</span>
+            </span>
+            <span>
+              Cost: <span className="text-green-400 tabular-nums">{formatCost(cumStats.costUsd)}</span>
+            </span>
+          </div>
+
+          {/* Scrubber */}
+          <input
+            type="range"
+            min={0}
+            max={maxIndex}
+            value={scrubberIndex}
+            onChange={(e) => setScrubberIndex(Number(e.target.value))}
+            className="w-full accent-amber-500 cursor-pointer"
+          />
+
+          {/* Step controls */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setScrubberIndex((i) => Math.max(0, i - 1))}
+              disabled={scrubberIndex === 0}
+              className="px-3 py-1 text-xs rounded bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              &larr; Prev
+            </button>
+            <button
+              onClick={() => setScrubberIndex((i) => Math.min(maxIndex, i + 1))}
+              disabled={scrubberIndex === maxIndex}
+              className="px-3 py-1 text-xs rounded bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Next &rarr;
+            </button>
+            <button
+              onClick={() => setScrubberIndex(0)}
+              className="px-3 py-1 text-xs rounded bg-gray-800 border border-gray-700 text-gray-400 hover:bg-gray-700 transition-colors"
+            >
+              &#8676; Start
+            </button>
+            <button
+              onClick={() => setScrubberIndex(maxIndex)}
+              className="px-3 py-1 text-xs rounded bg-gray-800 border border-gray-700 text-gray-400 hover:bg-gray-700 transition-colors"
+            >
+              End &#8677;
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Timeline */}
         <div className="lg:col-span-2 space-y-4">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-            Trace Events
+            {replayMode ? "Replay Events" : "Trace Events"}
           </h2>
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            {liveEvents.length === 0 ? (
+            {displayEvents.length === 0 ? (
               <div className="px-4 py-8 text-center text-gray-600 text-sm">No trace events yet</div>
             ) : (
               <div className="divide-y divide-gray-800/50 max-h-[600px] overflow-y-auto">
-                {liveEvents.map((ev, i) => (
-                  <div key={i} className="flex items-start gap-3 px-4 py-3 hover:bg-gray-800/30 transition-colors">
+                {displayEvents.map((ev, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-start gap-3 px-4 py-3 hover:bg-gray-800/30 transition-colors ${
+                      replayMode && i === scrubberIndex ? "bg-amber-900/20 border-l-2 border-amber-500" : ""
+                    }`}
+                  >
                     <div className="flex-shrink-0 w-20 text-xs text-gray-600 pt-0.5 tabular-nums">
                       {new Date(ev.ts).toLocaleTimeString()}
                     </div>

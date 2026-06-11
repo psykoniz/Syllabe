@@ -28,3 +28,5 @@ export type { TaskExecutor, TaskResult, TaskRunnerOptions } from "./task-runner"
 export { writeCheckpoint, loadCheckpoints, loadLatestCheckpoint, ensureCheckpointTable } from "./checkpoint";
 export type { CheckpointRow } from "./checkpoint";
 export { openDb, ensureRunMetaTable, setRunMeta } from "./session-db";
+export { RunReplay } from "@projectos/replay";
+export type { ReplayEvent, ReplaySummary } from "@projectos/replay";
