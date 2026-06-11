@@ -100,6 +100,10 @@ export interface CompactionOptions {
   maxChars: number;
   /** Number of trailing turns (assistant + tool-result pairs) kept intact */
   keepLastTurns: number;
+  /** Model-based summarizer for the middle of the conversation. When set,
+   *  compaction replaces the middle with a summary message instead of
+   *  truncating; falls back to truncation if it throws. */
+  summarizeFn?: (messages: MessageParam[]) => Promise<string>;
 }
 
 /** ~80k tokens at 4 chars/token */
@@ -294,6 +298,44 @@ export function compactMessages(
   );
 }
 
+/** Model-based compaction: keep messages[0] and the trailing turns verbatim,
+ *  replace everything in between with one summary message produced by
+ *  opts.summarizeFn. Falls back to compactMessages (truncation) when no
+ *  summarizer is configured or the summary call fails. */
+export async function compactMessagesSmart(
+  messages: MessageParam[],
+  opts: CompactionOptions
+): Promise<MessageParam[]> {
+  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  if (!opts.summarizeFn) return compactMessages(messages, opts);
+
+  const keepTail = opts.keepLastTurns * 2;
+  const tailStart = Math.max(1, messages.length - keepTail);
+  // Nothing in the middle to summarize — truncation handles edge cases better
+  if (tailStart <= 1) return compactMessages(messages, opts);
+
+  const middle = messages.slice(1, tailStart);
+  try {
+    const summary = await opts.summarizeFn(middle);
+    return [
+      messages[0],
+      { role: "user", content: `[conversation summary: ${summary}]` },
+      ...messages.slice(tailStart),
+    ];
+  } catch {
+    return compactMessages(messages, opts);
+  }
+}
+
+/** Cheap model used for the default conversation summarizer. */
+export const COMPACTION_MODEL = "claude-haiku-4-5";
+
+/** Prompt used by the default summarizer built from createMessage. */
+export const COMPACTION_SUMMARY_PROMPT =
+  "Summarize this agent conversation so work can continue seamlessly: decisions made, " +
+  "files created or modified, errors hit and how they were resolved, and the current " +
+  "objective. Be specific about file paths. 400 words maximum.";
+
 function textOf(content: ContentBlock[]): string {
   return content
     .filter((b): b is TextBlock => b.type === "text")
@@ -327,10 +369,29 @@ export async function runAgent(
     ? [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }]
     : undefined;
 
-  const compaction = opts.compaction ?? DEFAULT_COMPACTION;
+  const compaction = { ...(opts.compaction ?? DEFAULT_COMPACTION) };
+  if (!compaction.summarizeFn) {
+    // Default summarizer: one cheap model call over the middle of the history
+    compaction.summarizeFn = async (middle) => {
+      const res = await opts.createMessage({
+        // Honor a global override (e.g. OpenAI provider runs) — the haiku id
+        // only exists on Anthropic-compatible endpoints.
+        model: process.env.PROJECTOS_MODEL_OVERRIDE ?? COMPACTION_MODEL,
+        max_tokens: 1024,
+        system: COMPACTION_SUMMARY_PROMPT,
+        messages: [
+          ...middle,
+          { role: "user", content: "Now write the summary described in the system prompt." },
+        ],
+      });
+      const text = textOf(res.content).trim();
+      if (!text) throw new Error("empty summary");
+      return text;
+    };
+  }
 
   for (let turn = 1; turn <= maxIterations; turn++) {
-    const compacted = compactMessages(messages, compaction);
+    const compacted = await compactMessagesSmart(messages, compaction);
     if (compacted !== messages) {
       messages.splice(0, messages.length, ...compacted);
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runAgent, compactMessages, DEFAULT_COMPACTION, reasoningParams } from "./agent-runner";
+import { runAgent, compactMessages, compactMessagesSmart, DEFAULT_COMPACTION, reasoningParams } from "./agent-runner";
 import type {
   CreateMessageFn,
   MessageParam,
@@ -374,8 +374,14 @@ describe("runAgent — compaction integration", () => {
         createMessage: create,
         model: "claude-sonnet-4-6",
         toolContext: ctx,
-        // small threshold so a few 8k tool results trigger compaction
-        compaction: { maxChars: 30_000, keepLastTurns: 1 },
+        // small threshold so a few 8k tool results trigger compaction;
+        // disable the model summarizer so the stub createMessage sequence
+        // is not consumed by a summary call
+        compaction: {
+          maxChars: 30_000,
+          keepLastTurns: 1,
+          summarizeFn: async () => { throw new Error("truncate instead"); },
+        },
       }
     );
 
@@ -422,5 +428,51 @@ describe("reasoningParams", () => {
   it("sonnet and haiku get no reasoning params", () => {
     expect(reasoningParams("claude-sonnet-4-6")).toEqual({});
     expect(reasoningParams("claude-haiku-4-5")).toEqual({});
+  });
+});
+
+describe("compactMessagesSmart", () => {
+  const bigMsgs = (n: number): MessageParam[] => [
+    { role: "user", content: "the task" },
+    ...Array.from({ length: n }, (_, i): MessageParam[] => [
+      { role: "assistant", content: "x".repeat(5000) + ` step ${i}` },
+      { role: "user", content: "y".repeat(5000) },
+    ]).flat(),
+  ];
+
+  it("is a no-op under budget", async () => {
+    const msgs: MessageParam[] = [{ role: "user", content: "hi" }];
+    const out = await compactMessagesSmart(msgs, { maxChars: 10_000, keepLastTurns: 2 });
+    expect(out).toBe(msgs);
+  });
+
+  it("replaces the middle with a summary message", async () => {
+    const msgs = bigMsgs(10);
+    const out = await compactMessagesSmart(msgs, {
+      maxChars: 50_000,
+      keepLastTurns: 2,
+      summarizeFn: async (middle) => `summarized ${middle.length} messages`,
+    });
+    expect(out[0]).toEqual(msgs[0]);
+    expect(out[1].content).toContain("[conversation summary: summarized");
+    expect(out.length).toBe(2 + 4); // head + summary + 2 turns
+    expect(out[out.length - 1]).toEqual(msgs[msgs.length - 1]);
+  });
+
+  it("falls back to truncation when the summarizer throws", async () => {
+    const msgs = bigMsgs(10);
+    const out = await compactMessagesSmart(msgs, {
+      maxChars: 50_000,
+      keepLastTurns: 2,
+      summarizeFn: async () => { throw new Error("api down"); },
+    });
+    expect(out.length).toBe(msgs.length); // truncation keeps structure
+    expect(JSON.stringify(out)).not.toContain("conversation summary");
+  });
+
+  it("falls back to truncation without a summarizer", async () => {
+    const msgs = bigMsgs(10);
+    const out = await compactMessagesSmart(msgs, { maxChars: 50_000, keepLastTurns: 2 });
+    expect(out.length).toBe(msgs.length);
   });
 });

@@ -399,3 +399,59 @@ describe("systemPromptOverrides", () => {
     expect(systemsSeen.reviewer ?? "").not.toBe("CUSTOM IMPLEMENTER PROMPT");
   });
 });
+
+describe("memory injection", () => {
+  it("prepends ### Memory to architect prompts when lessons match", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const { Database } = await import("bun:sqlite");
+
+    const ws = mkdtempSync(join(tmpdir(), "memrun-"));
+    const home = mkdtempSync(join(tmpdir(), "memhome-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      // Seed global memory for this project key (basename of ws)
+      const { GlobalMemory, projectKeyFor } = await import("@projectos/memory");
+      const gm = new GlobalMemory({ project: projectKeyFor(ws) });
+      gm.appendLesson(
+        { id: "1", trigger: "widget", content: "Widgets need tests", createdAt: "", runId: "r", approved: true },
+        "project"
+      );
+
+      const prompts: string[] = [];
+      const stub = async (params: { messages: Array<{ content: unknown }> }) => {
+        prompts.push(String(params.messages[0].content));
+        return { content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
+      };
+
+      const db = new Database(":memory:");
+      const { ProjectRun } = await import("./project-run");
+      const run = new ProjectRun({
+        runId: "test-mem-1",
+        task: "build a widget factory",
+        workspace: ws,
+        db,
+        tracePath: join(ws, "traces.jsonl"),
+        createMessage: stub as never,
+        autoYes: true,
+      });
+
+      //
+
+      await (run as never as { callAgent: (r: string, p: string) => Promise<unknown> })
+        .callAgent("architect", "design the thing");
+      await (run as never as { callAgent: (r: string, p: string) => Promise<unknown> })
+        .callAgent("reviewer", "review the thing");
+
+      expect(prompts[0]).toContain("### Memory");
+      expect(prompts[0]).toContain("Widgets need tests");
+      expect(prompts[1]).not.toContain("### Memory");
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

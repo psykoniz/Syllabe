@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { runAgentLoop } from "./agent-loop";
 import { makeContext } from "./state-machine";
@@ -18,6 +18,8 @@ import type { ApprovalHandler } from "@projectos/policy";
 import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
+import { UserMemory, LessonCurator, GlobalMemory, projectKeyFor } from "@projectos/memory";
+import type { Lesson } from "@projectos/memory";
 import { buildRepoContext, buildRepoTree } from "./repo-context";
 import { ensureRunMetaTable, setRunMeta } from "./session-db";
 import { runAgent } from "./agent-runner";
@@ -102,6 +104,7 @@ export class ProjectRun implements AgentHandler {
   private browserSession: BrowserSession | null = null;
   private repoContext: string | null = null;
   private repoTree: string | null = null;
+  private memoryBlock: string | null = null;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -501,10 +504,53 @@ export class ProjectRun implements AgentHandler {
     });
 
     await this.callAgent("memory-curator", prompt);
+
+    // Persist lessons beyond this workspace (Hermes-style global memory):
+    // fresh clones would otherwise lose everything written to .agent/.
+    try {
+      const lessonsPath = join(this.agentDir, "lessons.json");
+      if (existsSync(lessonsPath)) {
+        const lessons = JSON.parse(readFileSync(lessonsPath, "utf8")) as Lesson[];
+        const globalMem = new GlobalMemory({ project: projectKeyFor(this.cfg.workspace) });
+        for (const l of lessons.filter((l) => l.approved && l.trigger && l.content)) {
+          globalMem.appendLesson(l, "project");
+        }
+      }
+    } catch {
+      // global memory is best-effort
+    }
     return { type: "LEARN_DONE" };
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Roles whose prompts benefit from past lessons and preferences. */
+  private static MEMORY_ROLES = new Set<Role>(["architect", "implementer"]);
+
+  /** Hermes-style memory block: user prefs + global/project lessons matched
+   *  against the task. Built once per run, capped at ~2k chars. */
+  private buildMemoryBlock(): string {
+    if (this.memoryBlock !== null) return this.memoryBlock;
+    try {
+      const home = process.env.HOME ?? "~";
+      const userMem = new UserMemory(join(home, ".projectos", "preferences.json"));
+      const globalMem = new GlobalMemory({ project: projectKeyFor(this.cfg.workspace) });
+      const localLessons = new LessonCurator(join(this.agentDir, "lessons.json"));
+
+      const parts = [
+        userMem.toContextBlock(),
+        globalMem.toContextBlock(this.cfg.task),
+        localLessons.toContextBlock(this.cfg.task),
+      ].filter(Boolean);
+
+      this.memoryBlock = parts.length > 0
+        ? ("### Memory\n" + parts.join("\n")).slice(0, 2000)
+        : "";
+    } catch {
+      this.memoryBlock = "";
+    }
+    return this.memoryBlock;
+  }
 
   private async callAgent(role: Role, prompt: string) {
     // modelOverride exists to substitute unavailable premium models (fable);
@@ -542,8 +588,11 @@ export class ProjectRun implements AgentHandler {
           dispatchPlaywrightTool(name, input, this.browserSession!)
       : undefined;
 
+    const memory = ProjectRun.MEMORY_ROLES.has(role) ? this.buildMemoryBlock() : "";
+    const finalPrompt = memory ? `${memory}\n\n${prompt}` : prompt;
+
     const result = await runAgent(
-      [{ role: "user", content: prompt }],
+      [{ role: "user", content: finalPrompt }],
       {
         createMessage: this.cfg.createMessage,
         model,
