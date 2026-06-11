@@ -78,6 +78,18 @@ function openDb(path: string): Database {
 }
 
 export async function defaultCreateMessage(): Promise<CreateMessageFn> {
+  // PROJECTOS_PROVIDER=openai (or having only an OpenAI key) routes every
+  // model call through the OpenAI-compatible adapter instead of Anthropic.
+  const wantsOpenAi =
+    process.env.PROJECTOS_PROVIDER === "openai" ||
+    (!!process.env.OPENAI_API_KEY &&
+      !process.env.ANTHROPIC_API_KEY &&
+      !process.env.ANTHROPIC_AUTH_TOKEN);
+  if (wantsOpenAi) {
+    const { openAiCreateMessage } = await import("./openai-adapter");
+    return openAiCreateMessage();
+  }
+
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   return async (params) => {

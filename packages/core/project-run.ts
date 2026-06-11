@@ -424,9 +424,12 @@ export class ProjectRun implements AgentHandler {
   private async callAgent(role: Role, prompt: string) {
     // modelOverride exists to substitute unavailable premium models (fable);
     // it must never upgrade the cost of roles already on a cheaper tier (haiku).
+    // With a non-Anthropic provider, the router's claude-* ids don't exist —
+    // the override applies to every role.
     const resolved = resolveModel(role);
+    const nonAnthropicProvider = process.env.PROJECTOS_PROVIDER === "openai";
     const model =
-      this.cfg.modelOverride && resolved.includes("fable")
+      this.cfg.modelOverride && (nonAnthropicProvider || resolved.includes("fable"))
         ? this.cfg.modelOverride
         : resolved;
     const system =

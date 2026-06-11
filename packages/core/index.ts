@@ -34,3 +34,5 @@ export { RunReplay } from "@projectos/replay";
 export type { ReplayEvent, ReplaySummary } from "@projectos/replay";
 export { loadPromotedConfig } from "./promoted-config";
 export type { PromotedConfig } from "./promoted-config";
+export { openAiCreateMessage, toOpenAiRequest, fromOpenAiResponse } from "./openai-adapter";
+export type { OpenAiAdapterOptions } from "./openai-adapter";
