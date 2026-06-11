@@ -18,6 +18,11 @@ export type EvalRunOpts = {
   modelOverride?: string;
   /** Loop bounds override (e.g. from a candidate config under benchmark) */
   loopBounds?: { maxRepair: number; maxReview: number };
+  /** Pre-seed the workspace (write fixture files) before the run starts */
+  setup?: (workspace: string) => void | Promise<void>;
+  /** Objective check on the workspace after the run; overrides the
+   *  state===COMPLETE heuristic when provided. Runs before cleanup. */
+  verify?: (workspace: string) => boolean | Promise<boolean>;
 };
 
 /** Sum cost across all trace events using the telemetry price table */
@@ -86,6 +91,8 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
   spawnSync("git", ["config", "user.email", "eval@projectos"], { cwd: workspace });
   spawnSync("git", ["config", "user.name", "ProjectOS Eval"], { cwd: workspace });
 
+  if (opts.setup) await opts.setup(workspace);
+
   const { ProjectRun, defaultCreateMessage } = await import("@projectos/core");
   const dbPath = join(workspace, ".projectos", "runs.db");
   mkdirSync(join(workspace, ".projectos"), { recursive: true });
@@ -123,8 +130,10 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
     });
 
     const result = await run.run();
-    passed = result.finalContext.state === "COMPLETE";
+    const completed = result.finalContext.state === "COMPLETE";
+    passed = opts.verify ? completed && (await opts.verify(workspace)) : completed;
     notes = `state=${result.finalContext.state} steps=${result.steps}`;
+    if (opts.verify && completed && !passed) notes += " verify=FAILED";
     if (result.finalContext.escalationReason) {
       notes += ` escalation=${result.finalContext.escalationReason}`;
     }
