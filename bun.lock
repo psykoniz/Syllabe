@@ -78,6 +78,10 @@
         "minimatch": "^10.2.5",
       },
     },
+    "packages/replay": {
+      "name": "@projectos/replay",
+      "version": "0.1.0",
+    },
     "packages/router": {
       "name": "@projectos/router",
       "version": "0.0.1",
@@ -221,6 +225,8 @@
     "@projectos/playwright-tools": ["@projectos/playwright-tools@workspace:packages/playwright-tools"],
 
     "@projectos/policy": ["@projectos/policy@workspace:packages/policy"],
+
+    "@projectos/replay": ["@projectos/replay@workspace:packages/replay"],
 
     "@projectos/router": ["@projectos/router@workspace:packages/router"],
 
