@@ -82,7 +82,7 @@ export class ProjectRun implements AgentHandler {
       case "INTAKE":    return this.handleIntake();
       case "CLARIFY":   return this.handleClarify();
       case "DESIGN":    return this.handleDesign(ctx);
-      case "PLAN":      return this.handlePlan();
+      case "PLAN":      return this.handlePlan(ctx);
       case "IMPLEMENT": return this.handleImplement(ctx);
       case "TEST":      return this.handleTest(ctx);
       case "REPAIR":    return this.handleRepair(ctx);
@@ -170,40 +170,16 @@ export class ProjectRun implements AgentHandler {
     };
   }
 
-  private async handlePlan(): Promise<MachineEvent> {
-    const planPath = join(this.agentDir, "implementation-plan.md");
-    const prompt = buildStatePrompt("PLAN", this.cfg.task, {
-      instructions: [
-        "Review the implementation plan and produce a final ordered work-unit list.",
-        "",
-        `Read the plan: ${planPath}`,
-        "",
-        "Then reply with JSON only — an array of work unit objects:",
-        '[{"id":"wu-1","description":"..."},{"id":"wu-2","description":"..."}]',
-        "",
-        "Rules:",
-        "- Each work unit should be completable in one IMPLEMENT→TEST→REVIEW cycle",
-        "- Order from lowest to highest dependency (foundations first)",
-        "- Maximum 8 work units; merge small tasks if needed",
-        "- Keep descriptions concrete and actionable",
-      ],
-    });
-
-    const result = await this.callAgent("architect", prompt);
-    const workUnits = parseWorkUnits(result.finalText, this.cfg.task);
-
-    // Persist the finalised plan for traceability
+  private async handlePlan(ctx: RunContext): Promise<MachineEvent> {
+    // Work units were already extracted by the architect during DESIGN and live
+    // in ctx.workUnits — a second architect call here would re-derive the same
+    // list and its output couldn't update the context anyway (IMPLEMENT_DONE
+    // carries no work units). Persist them for traceability and move on.
     writeFileSync(
       join(this.agentDir, "work-units.json"),
-      JSON.stringify(workUnits, null, 2),
+      JSON.stringify(ctx.workUnits, null, 2),
       "utf8"
     );
-
-    // PLAN → IMPLEMENT requires IMPLEMENT_DONE (see state-machine.ts:124)
-    // Work units are stored in the context already from DESIGN's PLAN_DONE event;
-    // we update them in-place via the agent loop's context merge on next transition.
-    // For now, signal readiness to start the first work unit.
-    void workUnits; // refined units written to work-units.json for human inspection
     return { type: "IMPLEMENT_DONE" };
   }
 
@@ -316,7 +292,13 @@ export class ProjectRun implements AgentHandler {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private async callAgent(role: Role, prompt: string) {
-    const model = this.cfg.modelOverride ?? resolveModel(role);
+    // modelOverride exists to substitute unavailable premium models (fable);
+    // it must never upgrade the cost of roles already on a cheaper tier (haiku).
+    const resolved = resolveModel(role);
+    const model =
+      this.cfg.modelOverride && resolved.includes("fable")
+        ? this.cfg.modelOverride
+        : resolved;
     const system =
       this.cfg.systemPromptOverrides?.[role] ??
       buildSystemPrompt({
@@ -369,13 +351,7 @@ export class ProjectRun implements AgentHandler {
     ].join("\n");
 
     const result = await this.callAgent("architect", prompt);
-    try {
-      const match = /\[[\s\S]*\]/.exec(result.finalText);
-      if (match) return JSON.parse(match[0]) as WorkUnit[];
-    } catch {
-      // fall through
-    }
-    return [{ id: "wu-1", description: this.cfg.task }];
+    return parseWorkUnits(result.finalText, this.cfg.task);
   }
 
   // ─── Entry point ───────────────────────────────────────────────────────────

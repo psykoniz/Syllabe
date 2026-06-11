@@ -294,7 +294,7 @@ describe("modelOverride", () => {
   beforeEach(() => { workspace = makeWorkspace(`model-${Date.now()}`); });
   afterEach(() => rmSync(workspace, { recursive: true, force: true }));
 
-  it("uses the override model for all calls regardless of role", async () => {
+  it("replaces fable-tier roles only — cheaper tiers keep their model", async () => {
     const seenModels = new Set<string>();
     const createMessage: CreateMessageFn = async (params) => {
       seenModels.add(params.model as string);
@@ -313,14 +313,16 @@ describe("modelOverride", () => {
     writeFileSync(join(agentDir, "test-plan.md"), "# T");
 
     const run = makeRun(workspace, createMessage, {
-      modelOverride: "claude-haiku-4-5",
+      modelOverride: "claude-sonnet-4-6",
     });
     await run.run().catch(() => {});
 
-    // Every model call should have used the override
+    // No fable model may remain, and the override must never upgrade
+    // haiku-tier roles (memory-curator) to a pricier model.
     for (const m of seenModels) {
-      expect(m).toBe("claude-haiku-4-5");
+      expect(m).not.toContain("fable");
     }
+    expect(seenModels.has("claude-sonnet-4-6")).toBe(true);
   });
 });
 
