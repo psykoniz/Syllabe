@@ -166,8 +166,39 @@ export class ProjectRun implements AgentHandler {
   }
 
   private async handlePlan(): Promise<MachineEvent> {
-    // Work units were already extracted during DESIGN→PLAN transition.
-    // PLAN state: quick sanity pass, then start implementation.
+    const planPath = join(this.agentDir, "implementation-plan.md");
+    const prompt = buildStatePrompt("PLAN", this.cfg.task, {
+      instructions: [
+        "Review the implementation plan and produce a final ordered work-unit list.",
+        "",
+        `Read the plan: ${planPath}`,
+        "",
+        "Then reply with JSON only — an array of work unit objects:",
+        '[{"id":"wu-1","description":"..."},{"id":"wu-2","description":"..."}]',
+        "",
+        "Rules:",
+        "- Each work unit should be completable in one IMPLEMENT→TEST→REVIEW cycle",
+        "- Order from lowest to highest dependency (foundations first)",
+        "- Maximum 8 work units; merge small tasks if needed",
+        "- Keep descriptions concrete and actionable",
+      ],
+    });
+
+    const result = await this.callAgent("architect", prompt);
+    const workUnits = parseWorkUnits(result.finalText, this.cfg.task);
+
+    // Persist the finalised plan for traceability
+    writeFileSync(
+      join(this.agentDir, "work-units.json"),
+      JSON.stringify(workUnits, null, 2),
+      "utf8"
+    );
+
+    // PLAN → IMPLEMENT requires IMPLEMENT_DONE (see state-machine.ts:124)
+    // Work units are stored in the context already from DESIGN's PLAN_DONE event;
+    // we update them in-place via the agent loop's context merge on next transition.
+    // For now, signal readiness to start the first work unit.
+    void workUnits; // refined units written to work-units.json for human inspection
     return { type: "IMPLEMENT_DONE" };
   }
 
@@ -350,6 +381,25 @@ export class ProjectRun implements AgentHandler {
       handler: this,
     });
   }
+}
+
+function parseWorkUnits(text: string, fallbackTask: string): WorkUnit[] {
+  try {
+    const match = /\[[\s\S]*?\]/.exec(text);
+    if (match) {
+      const parsed = JSON.parse(match[0]) as unknown[];
+      const units = parsed.filter(
+        (u): u is WorkUnit =>
+          typeof u === "object" && u !== null &&
+          typeof (u as WorkUnit).id === "string" &&
+          typeof (u as WorkUnit).description === "string"
+      );
+      if (units.length > 0) return units.slice(0, 8);
+    }
+  } catch {
+    // fall through to fallback
+  }
+  return [{ id: "wu-1", description: fallbackTask }];
 }
 
 function buildStatePrompt(

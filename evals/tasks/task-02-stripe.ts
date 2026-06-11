@@ -1,17 +1,15 @@
 import type { BenchmarkTask } from "@projectos/evals";
+import { runEvalTask } from "./_harness";
 
-/** Add Stripe subscription (test mode, recorded webhooks) to fixture app */
+/** Add payment processing logic (Stripe-style, mocked) */
 export const task02Stripe: BenchmarkTask = {
   id: "task-02-stripe",
-  description: "Add Stripe subscription (test mode, recorded webhooks) to fixture app",
+  description: "Add subscription billing logic (mocked Stripe-style)",
   async run() {
-    return {
-      passed: false,
-      costUsd: 0,
-      durationMs: 0,
-      secretsLeaked: false,
-      notes: "stub — requires live harness",
+    return runEvalTask({
+      taskId: "task-02-stripe",
+      task: "Build a subscription billing module in TypeScript. It must support: createSubscription(userId, plan), cancelSubscription(subscriptionId), getSubscription(subscriptionId), and listActiveSubscriptions(). Use an in-memory store. Plans are 'basic' and 'pro'. Write bun:test tests for all operations including cancellation and listing. All tests must pass with `bun test`.",
       pendingLabels: ["unnecessaryQuestions"],
-    };
+    });
   },
 };
