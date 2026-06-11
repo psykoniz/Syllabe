@@ -4,7 +4,7 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { Database } from "bun:sqlite";
 import { ProjectRun, defaultCreateMessage } from "@projectos/core";
-import { ensureRunMetaTable, setRunMeta } from "@projectos/core";
+import { ensureRunMetaTable, setRunMeta, loadPromotedConfig } from "@projectos/core";
 import { autoApprove, interactiveApproval } from "@projectos/policy";
 
 export const buildCommand = new Command("build")
@@ -19,8 +19,12 @@ export const buildCommand = new Command("build")
   .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
   .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
   .option("--browser-tools", "Enable Playwright browser automation tools", false)
+  .option("--parallel <n>", "Run work units concurrently with this concurrency (>=2 enables)", "0")
+  .option("--harness-dir <path>", "Harness dir with promoted config (promotions.json)", "~/.projectos/harness")
   .action(async (opts) => {
-    const runId = randomUUID();
+    // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
+    // run id so it can track the run it just launched.
+    const runId = process.env.PROJECTOS_RUN_ID ?? randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
     const db = new Database(opts.db, { create: true });
     ensureRunMetaTable(db);
@@ -34,6 +38,14 @@ export const buildCommand = new Command("build")
 
     const createMessage = await defaultCreateMessage();
 
+    // Apply config promoted by the self-improvement loop (and not rolled
+    // back) so validated improvements reach normal builds, not just evals.
+    const harnessDir = opts.harnessDir.replace(/^~/, process.env.HOME ?? "~");
+    const promoted = loadPromotedConfig(harnessDir);
+    if (promoted.loopBounds || promoted.systemPrompts) {
+      console.log("Applying promoted harness config:", JSON.stringify(promoted).slice(0, 120));
+    }
+
     const run = new ProjectRun({
       runId,
       task: opts.task,
@@ -45,9 +57,14 @@ export const buildCommand = new Command("build")
       autoYes: opts.yes,
       maxIterationsPerState: parseInt(opts.maxIterations, 10),
       modelOverride: opts.modelOverride,
+      loopBounds: promoted.loopBounds
+        ? { maxRepair: 3, maxReview: 2, ...promoted.loopBounds }
+        : undefined,
+      systemPromptOverrides: promoted.systemPrompts,
       sandbox: opts.sandbox,
       sandboxImage: opts.sandboxImage,
       browserTools: opts.browserTools,
+      parallelWorkUnits: parseInt(opts.parallel, 10) || undefined,
     });
 
     try {

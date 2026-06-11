@@ -24,8 +24,10 @@ export const evalCommand = new Command("eval")
         const { task03BugFix } = await import("../../../evals/tasks/task-03-bug-fix");
         const { task04Playwright } = await import("../../../evals/tasks/task-04-playwright");
         const { task05LandingPage } = await import("../../../evals/tasks/task-05-landing-page");
+        const { task06SubtleBug } = await import("../../../evals/tasks/task-06-subtle-bug");
+        const { task07Refactor } = await import("../../../evals/tasks/task-07-refactor");
 
-        const tasks = [task00Smoke, task01TodoApp, task02Stripe, task03BugFix, task04Playwright, task05LandingPage];
+        const tasks = [task00Smoke, task01TodoApp, task02Stripe, task03BugFix, task04Playwright, task05LandingPage, task06SubtleBug, task07Refactor];
 
         console.log(`\nProjectOS eval run — ${tasks.length} tasks × ${opts.runs} reps — cap $${opts.costCap}`);
         console.log(`Output: ${outputDir}\n`);
