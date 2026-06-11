@@ -138,22 +138,26 @@ Security-relevant events (deny triggered, secret detected, approval requested) a
 
 ## Sandbox
 
-For untrusted shell execution (PR-13+):
+Implemented in `packages/sandbox` (`DockerSandbox` / `SandboxedBash`). Enable per run with
+`projectos build --sandbox [--sandbox-image <image>]` or `ProjectRunConfig.sandbox: true`.
 
-- All `bash` tool calls run inside a Docker container with:
-  - No network access
-  - Read-only mount of project source
-  - Write access only to a temp output directory
-  - CPU and memory limits
-  - 30-second timeout by default
+When enabled, all `bash` tool calls run inside an ephemeral Docker container with:
 
-Until Docker sandbox is implemented (PR-13), `bash` is sandboxed by:
+- `--network none` (default; configurable per sandbox instance)
+- Workspace mounted read-write at `/workspace`, cwd locked there
+- Root filesystem read-only (`--read-only`, 64 MB tmpfs at `/tmp`)
+- Memory capped (512 MB default) with swap disabled
+- `--security-opt no-new-privileges`
+- Environment reduced to `PATH` only — no host env crosses the boundary
+- 60-second timeout default; container removed on exit (`--rm`)
+
+If `sandbox: true` is requested but Docker is unavailable, the run warns and falls back
+to the host `BashTool`, which is sandboxed by:
 - CWD locked to project root
-- PATH restricted to a known-safe set
 - Environment allowlist (no secrets present — see Environment Variable Scrubbing)
 - No `sudo`, no `su`, no setuid binaries
 
-**Known limitation until PR-13:** network-capable commands (`curl`, `wget`, `node -e "fetch(...)"``) are blocked only by pattern matching, which is best-effort and bypassable. The Docker sandbox (no-network by default) is what makes the network-deny rule actually enforceable. Until then, treat the network rule as a tripwire, not a wall.
+**Known limitation in fallback mode:** network-capable commands (`curl`, `wget`, `node -e "fetch(...)"``) are blocked only by pattern matching, which is best-effort and bypassable. The Docker sandbox (no-network by default) is what makes the network-deny rule actually enforceable. In fallback mode, treat the network rule as a tripwire, not a wall.
 
 ---
 

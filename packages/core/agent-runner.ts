@@ -85,6 +85,12 @@ export interface AgentRunnerOptions {
   maxToolResultChars?: number;
   maxTokensPerTurn?: number;
   onTurn?: (info: TurnInfo) => void;
+  /** Async tool dispatcher for extended tool sets (e.g. playwright).
+   *  Called first; falls through to the default dispatchTool when it returns null. */
+  extraDispatcher?: (
+    toolName: string,
+    input: Record<string, unknown>
+  ) => Promise<{ content: string; isError: boolean } | null>;
 }
 
 export interface AgentRunResult {
@@ -174,7 +180,10 @@ async function executeToolUse(
     }
   }
 
-  const dispatched = dispatchTool(block.name, block.input, opts.toolContext);
+  const extra = opts.extraDispatcher
+    ? await opts.extraDispatcher(block.name, block.input)
+    : null;
+  const dispatched = extra ?? dispatchTool(block.name, block.input, opts.toolContext);
   return {
     type: "tool_result",
     tool_use_id: block.id,

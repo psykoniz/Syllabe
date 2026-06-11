@@ -18,9 +18,12 @@
       "@projectos/policy": ["packages/policy/index.ts"],
       "@projectos/agents": ["packages/agents/index.ts"],
       "@projectos/memory": ["packages/memory/index.ts"],
-      "@projectos/evals": ["packages/evals/index.ts"]
+      "@projectos/evals": ["packages/evals/index.ts"],
+      "@projectos/sandbox": ["packages/sandbox/src/index.ts"],
+      "@projectos/playwright-tools": ["packages/playwright-tools/src/index.ts"],
+      "@projectos/replay": ["packages/replay/src/index.ts"]
     }
   },
   "include": ["apps/**/*", "packages/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "apps/web/src", "apps/web/vite.config.ts"]
 }

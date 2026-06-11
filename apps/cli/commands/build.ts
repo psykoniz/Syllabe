@@ -4,6 +4,7 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { Database } from "bun:sqlite";
 import { ProjectRun, defaultCreateMessage } from "@projectos/core";
+import { ensureRunMetaTable, setRunMeta } from "@projectos/core";
 import { autoApprove, interactiveApproval } from "@projectos/policy";
 
 export const buildCommand = new Command("build")
@@ -15,10 +16,17 @@ export const buildCommand = new Command("build")
   .option("--max-iterations <n>", "Max agent iterations per state", "20")
   .option("--yes", "Apply all interview defaults (non-interactive)", false)
   .option("--model-override <id>", "Force all role calls to use this model (e.g. claude-sonnet-4-6)")
+  .option("--sandbox", "Run bash commands in a Docker sandbox (requires Docker)", false)
+  .option("--sandbox-image <image>", "Docker image for the sandbox", "node:20-alpine")
+  .option("--browser-tools", "Enable Playwright browser automation tools", false)
   .action(async (opts) => {
     const runId = randomUUID();
     mkdirSync(dirname(opts.db), { recursive: true });
     const db = new Database(opts.db, { create: true });
+    ensureRunMetaTable(db);
+    setRunMeta(db, runId, "task", opts.task);
+    setRunMeta(db, runId, "model", opts.modelOverride ?? "default");
+    setRunMeta(db, runId, "startedAt", new Date().toISOString());
 
     console.log(`\nProjectOS build — run ${runId}`);
     console.log(`Workspace: ${opts.workspace}`);
@@ -37,6 +45,9 @@ export const buildCommand = new Command("build")
       autoYes: opts.yes,
       maxIterationsPerState: parseInt(opts.maxIterations, 10),
       modelOverride: opts.modelOverride,
+      sandbox: opts.sandbox,
+      sandboxImage: opts.sandboxImage,
+      browserTools: opts.browserTools,
     });
 
     try {

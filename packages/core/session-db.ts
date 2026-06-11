@@ -16,3 +16,19 @@ export function openDb(path: string): Database {
   `);
   return db;
 }
+
+/** Lightweight key-value metadata per run (task description, model used, etc.) */
+export function ensureRunMetaTable(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS run_meta (
+      run_id TEXT NOT NULL,
+      key    TEXT NOT NULL,
+      value  TEXT NOT NULL,
+      PRIMARY KEY (run_id, key)
+    )
+  `);
+}
+
+export function setRunMeta(db: Database, runId: string, key: string, value: string): void {
+  db.run(`INSERT OR REPLACE INTO run_meta (run_id, key, value) VALUES (?, ?, ?)`, [runId, key, value]);
+}
