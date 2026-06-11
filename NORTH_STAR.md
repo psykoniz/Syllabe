@@ -38,6 +38,25 @@ ProjectOS livre avec succès **5 tâches réelles sur mes repos** (feature
 ou fix, suite de tests verte, diff utilisable) pour moins de $25 au
 total. Le dogfooding (docs/DOGFOOD_TASK.md) est la première des cinq.
 
+## Quand déléguer une tâche à ProjectOS (test des 4 conditions)
+
+Avant de lancer un run, la tâche doit passer LES QUATRE :
+
+1. **Répétition** — la tâche (ou sa famille) revient au moins chaque semaine.
+2. **Vérification automatique** — tests, typecheck ou linter peuvent valider
+   le résultat sans moi.
+3. **Budget absorbable** — le coût du run reste dans le budget mensuel.
+4. **Outils suffisants** — l'agent a accès à ce qu'un dev senior utiliserait
+   (logs, environnement de repro, suite de tests du projet).
+
+Si une condition manque : faire la tâche à la main, c'est plus rapide.
+
+## Backlog (en attente d'un besoin réel)
+
+- **Déclencheur CI** : étendre la GitHub Action pour qu'un échec CI sur main
+  lance automatiquement un run de triage. À implémenter le jour où un CI
+  cassé m'aura réellement coûté du temps — pas avant.
+
 ## Anti-patterns à refuser
 
 - Construire une feature "parce qu'on peut".
