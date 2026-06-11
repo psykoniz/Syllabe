@@ -8,3 +8,4 @@ evals/results/*/
 evals/results/*.json
 !evals/results/baseline.json
 .claude/settings.local.json
+.env*
