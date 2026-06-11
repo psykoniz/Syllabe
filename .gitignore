@@ -9,4 +9,5 @@ evals/results/*.json
 !evals/results/baseline.json
 .claude/settings.local.json
 .env*
-.agent/
+.agent/*
+!.agent/lessons.json
