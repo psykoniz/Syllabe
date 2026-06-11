@@ -1,0 +1,62 @@
+[
+  {
+    "candidateId": "auto-1781157064589",
+    "config": {
+      "loopBounds": {
+        "maxReview": 3
+      }
+    },
+    "promotedAt": "2026-06-11T07:15:57.270Z",
+    "comparison": [
+      {
+        "taskId": "task-00-smoke",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0,
+        "promoted": true
+      },
+      {
+        "taskId": "task-01-todo-app",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0,
+        "promoted": true
+      },
+      {
+        "taskId": "task-02-stripe",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0,
+        "promoted": true
+      },
+      {
+        "taskId": "task-03-bug-fix",
+        "basePassRate": 0,
+        "candidatePassRate": 1,
+        "delta": 1,
+        "costDelta": 0,
+        "promoted": true
+      },
+      {
+        "taskId": "task-04-playwright",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0,
+        "promoted": true
+      },
+      {
+        "taskId": "task-05-landing-page",
+        "basePassRate": 1,
+        "candidatePassRate": 1,
+        "delta": 0,
+        "costDelta": 0,
+        "promoted": true
+      }
+    ],
+    "adrPath": "/root/.projectos/harness/decisions/ADR-001-harness-optimizer-candidate-auto-1781157064589.md"
+  }
+]
