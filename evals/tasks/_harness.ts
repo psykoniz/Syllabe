@@ -14,6 +14,8 @@ export type EvalRunOpts = {
   task: string;
   costCapUsd?: number;
   pendingLabels?: string[];
+  /** Force all role calls to this model (avoids fable 503s) */
+  modelOverride?: string;
 };
 
 export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "taskId" | "runIndex">> {
@@ -67,6 +69,7 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
       createMessage,
       autoYes: true,
       maxIterationsPerState: 20,
+      modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
     });
 
     const result = await run.run();
