@@ -93,7 +93,12 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
 
   if (opts.setup) await opts.setup(workspace);
 
-  const { ProjectRun, defaultCreateMessage } = await import("@projectos/core");
+  const { ProjectRun, defaultCreateMessage, loadPromotedConfig } = await import("@projectos/core");
+  // The eval must measure the PRODUCTION harness: promoted config applies by
+  // default exactly like build.ts, env vars (candidate under benchmark) win.
+  const harnessDir = (process.env.PROJECTOS_HARNESS_DIR ?? "~/.projectos/harness")
+    .replace(/^~/, process.env.HOME ?? "~");
+  const promoted = loadPromotedConfig(harnessDir);
   const dbPath = join(workspace, ".projectos", "runs.db");
   mkdirSync(join(workspace, ".projectos"), { recursive: true });
   const db = new Database(dbPath, { create: true });
@@ -125,8 +130,9 @@ export async function runEvalTask(opts: EvalRunOpts): Promise<Omit<TaskScore, "t
       autoYes: true,
       maxIterationsPerState: 20,
       modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
-      loopBounds: opts.loopBounds ?? envLoopBounds(),
-      systemPromptOverrides: envSystemPrompts(),
+      loopBounds: opts.loopBounds ?? envLoopBounds() ??
+        (promoted.loopBounds ? { maxRepair: 3, maxReview: 2, ...promoted.loopBounds } : undefined),
+      systemPromptOverrides: envSystemPrompts() ?? promoted.systemPrompts,
     });
 
     const result = await run.run();
