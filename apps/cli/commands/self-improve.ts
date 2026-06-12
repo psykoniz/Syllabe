@@ -1,8 +1,9 @@
 import { Command } from "commander";
 import { mkdirSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { HarnessOptimizer, validateCandidateConfig } from "@projectos/agents";
-import type { FailurePattern, CandidateConfig } from "@projectos/agents";
+import { HarnessOptimizerV2, validateCandidateConfig } from "@projectos/agents";
+import type { FailurePattern, CandidateConfig, OptimizerCreateMessageFn } from "@projectos/agents";
+import { defaultCreateMessage } from "@projectos/core";
 import { CandidateRunner, BaselineStore, Frontier, aggregateScores } from "@projectos/evals";
 import type { BenchmarkTask } from "@projectos/evals";
 
@@ -38,14 +39,21 @@ export const selfImproveCommand = new Command("self-improve")
 
     // ── 2. Analyze + propose ──────────────────────────────────────────────────
 
-    const optimizer = new HarnessOptimizer();
+    // V2: heuristics first; when they return {} (unknown pattern), one LLM
+    // call proposes a candidate config from the failure patterns + traces.
+    const createMessage = (await defaultCreateMessage()) as unknown as OptimizerCreateMessageFn;
+    const optimizer = new HarnessOptimizerV2(createMessage);
     const sorted = optimizer.analyzeFailures(patterns);
     const rejectionsPath = join(harnessDir, "rejections.json");
     const rejectedConfigs = loadRejections(rejectionsPath);
     if (rejectedConfigs.length > 0) {
       console.log(`Known rejected candidates: ${rejectedConfigs.length}`);
     }
-    const proposal = optimizer.propose(sorted, rejectedConfigs);
+    const proposal = await optimizer.proposeLLM(
+      sorted,
+      rejectedConfigs,
+      readTraceExcerpts(opts.runsDir)
+    );
 
     console.log(`\nProposal: ${proposal.rationale}`);
     console.log(`Change:   ${JSON.stringify(proposal.change)}`);
@@ -162,6 +170,17 @@ export const selfImproveCommand = new Command("self-improve")
       process.exit(1);
     }
   });
+
+/** Last ~3k chars of traces.jsonl — failure context for the LLM optimizer. */
+function readTraceExcerpts(runsDir: string): string {
+  const tracePath = join(runsDir, "traces.jsonl");
+  if (!existsSync(tracePath)) return "";
+  try {
+    return readFileSync(tracePath, "utf8").slice(-3000);
+  } catch {
+    return "";
+  }
+}
 
 function loadRejections(path: string): CandidateConfig[] {
   if (!existsSync(path)) return [];
