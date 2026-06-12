@@ -34,7 +34,7 @@ describe("stats formatTable", () => {
   });
 
   it("shows zero stats when DB does not exist", () => {
-    const result = spawnSync("bun", [
+    const result = spawnSync(process.execPath || "bun", [
       "run", "apps/cli/index.ts", "stats",
       "--db", "/tmp/nonexistent-projectos.db",
       "--traces", "/tmp/nonexistent-traces.jsonl",

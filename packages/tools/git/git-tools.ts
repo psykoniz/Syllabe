@@ -137,8 +137,21 @@ export class GitTools {
 
   commit(files: string[], message: string): GitCommitResult {
     const start = Date.now();
+    const filteredFiles = files.filter((f) => {
+      const normalized = f.replace(/\\/g, "/");
+      return !normalized.split("/").some((part) => part === ".agent" || part === ".projectos");
+    });
+
+    if (filteredFiles.length === 0) {
+      this.log("git:commit", { files, message }, Date.now() - start);
+      return {
+        sha: "0000000000000000000000000000000000000000",
+        message: `${message} (agent-internal files ignored)`,
+      };
+    }
+
     try {
-      const addResult = git(["add", "--", ...files], this.opts.repoPath);
+      const addResult = git(["add", "--", ...filteredFiles], this.opts.repoPath);
       if (addResult.exitCode !== 0) throw new Error(`git add failed: ${addResult.stderr}`);
 
       const commitResult = git(["commit", "-m", message], this.opts.repoPath);
@@ -147,7 +160,7 @@ export class GitTools {
       const shaResult = git(["rev-parse", "HEAD"], this.opts.repoPath);
       const sha = shaResult.stdout;
 
-      this.log("git:commit", { files, message }, Date.now() - start);
+      this.log("git:commit", { files: filteredFiles, message }, Date.now() - start);
       return { sha, message };
     } catch (e) {
       this.log("git:commit", { files, message }, Date.now() - start, (e as Error).message);
