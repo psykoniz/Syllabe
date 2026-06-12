@@ -84,7 +84,7 @@ export function createExploreDispatcher(opts: ExploreDispatcherOptions) {
   };
 }
 
-type ExtraDispatcher = (
+export type ExtraDispatcher = (
   name: string,
   input: Record<string, unknown>
 ) => Promise<ToolDispatchResult | undefined> | ToolDispatchResult | undefined;

@@ -10,3 +10,11 @@ export { ProjectMemory, assembleContext } from "./project-memory";
 export type { ProjectMemoryData, MemoryBlocks } from "./project-memory";
 export { GlobalMemory, projectKeyFor } from "./global-memory";
 export type { GlobalMemoryOptions } from "./global-memory";
+export {
+  SemanticIndex,
+  SimpleVectorIndex,
+  ApiEmbeddingProvider,
+  createSemanticIndex,
+} from "./embeddings";
+export type { EmbeddingProvider } from "./embeddings";
+
