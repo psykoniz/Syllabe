@@ -92,6 +92,13 @@ describe("computeCost", () => {
     expect(result.totalUsd).toBeCloseTo(0.225, 6);
   });
 
+  it("computes non-zero cost for gpt-5.5", () => {
+    const result = computeCost([{ model: "gpt-5.5", inputTokens: 100_000, outputTokens: 10_000 }]);
+    // 100k input * $10/M = $1.00, 10k output * $40/M = $0.40 → $1.40
+    expect(result.totalUsd).toBeCloseTo(1.4, 6);
+    expect(result.byModel["gpt-5.5"].usd).toBeCloseTo(1.4, 6);
+  });
+
   it("treats unknown model as zero cost", () => {
     const result = computeCost([{ model: "gpt-unknown", inputTokens: 1_000_000, outputTokens: 1_000_000 }]);
     expect(result.totalUsd).toBe(0);
