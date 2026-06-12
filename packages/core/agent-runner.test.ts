@@ -208,6 +208,65 @@ describe("runAgent — basic", () => {
   });
 });
 
+describe("runAgent — extraDispatcher", () => {
+  /** Scripted double: first call uses `toolName`, second call captures the
+   *  tool result and ends the run. */
+  function probeCreate(toolName: string, input: Record<string, unknown>, seen: { result?: string }): CreateMessageFn {
+    return async (params) => {
+      const last = params.messages[params.messages.length - 1];
+      if (Array.isArray(last.content) && last.role === "user") {
+        seen.result = (last.content[0] as { content: string }).content;
+        return {
+          content: [{ type: "text", text: "done" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+      return {
+        content: [{ type: "tool_use", id: "t1", name: toolName, input }],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+  }
+
+  it("handles extended tools before the default dispatch", async () => {
+    const ctx = makeFakeCtx();
+    const seen: { result?: string } = {};
+    const result = await runAgent(
+      [{ role: "user", content: "go" }],
+      {
+        createMessage: probeCreate("my_ext_tool", {}, seen),
+        model: "claude-sonnet-4-6",
+        toolContext: ctx,
+        extraDispatcher: (name) =>
+          name === "my_ext_tool" ? { content: "ext says hi", isError: false } : undefined,
+      }
+    );
+    expect(result.finalText).toBe("done");
+    expect(seen.result).toBe("ext says hi");
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("nullish return falls through to the standard dispatcher", async () => {
+    const ctx = makeFakeCtx();
+    const seen: { result?: string } = {};
+    const result = await runAgent(
+      [{ role: "user", content: "go" }],
+      {
+        createMessage: probeCreate("bash", { command: "echo fallthrough-ok" }, seen),
+        model: "claude-sonnet-4-6",
+        toolContext: ctx,
+        // a dispatcher that claims nothing must never block standard tools
+        extraDispatcher: () => null,
+      }
+    );
+    expect(result.finalText).toBe("done");
+    expect(seen.result).toContain("fallthrough-ok");
+    rmSync(TMP, { recursive: true, force: true });
+  });
+});
+
 describe("runAgent — tool result truncation", () => {
   it("truncates oversized tool output, keeping head and tail", async () => {
     const ctx = makeFakeCtx();

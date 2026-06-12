@@ -21,7 +21,7 @@ describe("createExploreDispatcher", () => {
     const ws = mkdtempSync(join(tmpdir(), "exp-"));
     try {
       const d = createExploreDispatcher({
-        createMessage: async () => ({ content: [], stop_reason: "end_turn" }) as ChatResponse,
+        createMessage: async () => ({ content: [], stop_reason: "end_turn", usage: { input_tokens: 0, output_tokens: 0 } }),
         toolContext: makeCtx(ws),
       });
       expect(await d("bash", {})).toBeUndefined();
@@ -93,5 +93,13 @@ describe("chainDispatchers", () => {
     expect((await chained("a", {}))?.content).toBe("from a");
     expect((await chained("b", {}))?.content).toBe("from b");
     expect(await chained("c", {})).toBeUndefined();
+  });
+
+  it("treats null as not-handled, same as undefined", async () => {
+    const a = () => null;
+    const b = (n: string) => (n === "b" ? { content: "from b", isError: false } : undefined);
+    const chained = chainDispatchers(a, b);
+    expect((await chained("b", {}))?.content).toBe("from b");
+    expect(await chained("x", {})).toBeUndefined();
   });
 });

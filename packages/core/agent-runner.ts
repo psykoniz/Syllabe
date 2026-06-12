@@ -1,6 +1,6 @@
 import { resolve } from "path";
 import { dispatchTool, TOOL_DEFINITIONS } from "@projectos/tools";
-import type { ToolContext, ToolDef } from "@projectos/tools";
+import type { ToolContext, ToolDef, ToolDispatchResult } from "@projectos/tools";
 import { PermissionEngine, redact, autoDeny } from "@projectos/policy";
 import type { ApprovalHandler, ToolRequest } from "@projectos/policy";
 
@@ -86,6 +86,14 @@ export function reasoningParams(
 
 export type CreateMessageFn = (params: CreateMessageParams) => Promise<ChatResponse>;
 
+/** Tool dispatcher for extended tool sets (e.g. playwright, explore).
+ *  Consulted before the default dispatchTool for every tool call; a null or
+ *  undefined return means "not mine" and falls through. May be sync or async. */
+export type ExtraDispatcher = (
+  toolName: string,
+  input: Record<string, unknown>
+) => Promise<ToolDispatchResult | null | undefined> | ToolDispatchResult | null | undefined;
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 
 export interface TurnInfo {
@@ -130,12 +138,9 @@ export interface AgentRunnerOptions {
   /** Reasoning effort for premium models (default "high"; use "max" only
    *  for genuinely hard phases — design, review) */
   effort?: EffortLevel;
-  /** Async tool dispatcher for extended tool sets (e.g. playwright).
-   *  Called first; falls through to the default dispatchTool when it returns null. */
-  extraDispatcher?: (
-    toolName: string,
-    input: Record<string, unknown>
-  ) => Promise<{ content: string; isError: boolean } | null>;
+  /** Tool dispatcher for extended tool sets (e.g. playwright). Called first;
+   *  falls through to the default dispatchTool when it returns null/undefined. */
+  extraDispatcher?: ExtraDispatcher;
 }
 
 export interface AgentRunResult {

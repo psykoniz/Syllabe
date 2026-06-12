@@ -662,9 +662,13 @@ export class ProjectRun implements AgentHandler {
     }
 
     const extraTools = [...(this.cfg.browserTools ? PLAYWRIGHT_TOOL_DEFINITIONS : [])];
+    // dispatchPlaywrightTool errors on names it doesn't know — scope it to
+    // browser_* or it would swallow every other tool call in the chain
     const playwrightDispatcher = this.cfg.browserTools && this.browserSession
       ? (name: string, input: Record<string, unknown>) =>
-          dispatchPlaywrightTool(name, input, this.browserSession!)
+          name.startsWith("browser_")
+            ? dispatchPlaywrightTool(name, input, this.browserSession!)
+            : undefined
       : undefined;
 
     // Architect and implementer can fan out read-only research sub-agents

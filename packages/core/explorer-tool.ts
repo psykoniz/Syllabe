@@ -1,7 +1,7 @@
 import { TOOL_DEFINITIONS } from "@projectos/tools";
 import type { ToolContext, ToolDispatchResult } from "@projectos/tools";
 import { runAgent } from "./agent-runner";
-import type { CreateMessageFn } from "./agent-runner";
+import type { CreateMessageFn, ExtraDispatcher } from "./agent-runner";
 
 /** Read-only research sub-agent tool. The main agent can fan out questions
  *  about the codebase without polluting its own context with file dumps. */
@@ -84,18 +84,14 @@ export function createExploreDispatcher(opts: ExploreDispatcherOptions) {
   };
 }
 
-type ExtraDispatcher = (
-  name: string,
-  input: Record<string, unknown>
-) => Promise<ToolDispatchResult | undefined> | ToolDispatchResult | undefined;
-
-/** Try dispatchers in order; first non-undefined result wins. */
+/** Try dispatchers in order; the first result that isn't null/undefined wins
+ *  (both mean "not mine", matching the runner's fall-through contract). */
 export function chainDispatchers(...fns: Array<ExtraDispatcher | undefined>): ExtraDispatcher {
   const active = fns.filter((f): f is ExtraDispatcher => !!f);
   return async (name, input) => {
     for (const fn of active) {
       const r = await fn(name, input);
-      if (r !== undefined) return r;
+      if (r != null) return r;
     }
     return undefined;
   };
