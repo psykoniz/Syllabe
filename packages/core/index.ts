@@ -42,3 +42,14 @@ export { appendSteering, readPendingSteering, markConsumed } from "./steering";
 export type { SteeringMessage } from "./steering";
 export { EXPLORE_TOOL, createExploreDispatcher, chainDispatchers } from "./explorer-tool";
 export type { ExploreDispatcherOptions } from "./explorer-tool";
+export {
+  ensureNodeModules,
+  runWorkspaceTests,
+  parseTestFailures,
+  parseFailedTestFiles,
+  getChangedFiles,
+  failuresOutsideScope,
+  changedFileStats,
+  buildRepairDiagnostic,
+} from "./workspace-runner";
+export type { InstallResult, TestRunResult, TestFailure } from "./workspace-runner";

@@ -26,6 +26,16 @@ import { buildRepoContext, buildRepoTree } from "./repo-context";
 import { ensureRunMetaTable, setRunMeta } from "./session-db";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, EffortLevel } from "./agent-runner";
+import {
+  ensureNodeModules,
+  runWorkspaceTests,
+  parseTestFailures,
+  getChangedFiles,
+  failuresOutsideScope,
+  changedFileStats,
+  buildRepairDiagnostic,
+} from "./workspace-runner";
+import type { TestFailure } from "./workspace-runner";
 import { spawnSync } from "child_process";
 
 export interface ProjectRunConfig {
@@ -107,6 +117,8 @@ export class ProjectRun implements AgentHandler {
   private repoContext: string | null = null;
   private repoTree: string | null = null;
   private memoryBlock: string | null = null;
+  /** Structured failures from the last failing TEST run, for REPAIR. */
+  private lastTestFailures: TestFailure[] = [];
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -426,6 +438,14 @@ export class ProjectRun implements AgentHandler {
   private async handleTest(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
 
+    // Fix 1: guarantee a usable workspace before any `bun test` run —
+    // isolated clones often lack node_modules, and missing dependencies
+    // produce failures that have nothing to do with the task.
+    const install = ensureNodeModules(this.cfg.workspace);
+    if (install.attempted) {
+      this.traceSystem("TEST", { install: install.detail, ok: install.ok });
+    }
+
     const prompt = buildStatePrompt("TEST", this.cfg.task, {
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
@@ -438,19 +458,56 @@ export class ProjectRun implements AgentHandler {
 
     const result = await this.callAgent("test-engineer", prompt);
     const passed = /VERDICT:\s*PASS/i.test(result.finalText);
-    return passed ? { type: "TESTS_PASS" } : { type: "TESTS_FAIL" };
+    if (passed) {
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+
+    // Fix 2: before entering REPAIR, run `bun test` deterministically and
+    // check whether every failure lives in files the agent never touched.
+    // Out-of-scope failures (e.g. a pre-existing broken test elsewhere in
+    // the monorepo) must not trap the run in a REPAIR loop.
+    const testRun = runWorkspaceTests(this.cfg.workspace);
+    if (testRun.exitCode === 0) {
+      // Tests actually pass — the agent's verdict was wrong.
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+    const failures = parseTestFailures(testRun.output);
+    const failedFiles = [...new Set(failures.map((f) => f.file))];
+    const changed = getChangedFiles(this.cfg.workspace);
+    if (failuresOutsideScope(failedFiles, changed)) {
+      this.traceSystem("TEST", {
+        decision: "test failures outside task scope — skipping repair",
+        failedFiles,
+        changedFiles: changed,
+      });
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+    this.lastTestFailures = failures;
+    return { type: "TESTS_FAIL" };
   }
 
   private async handleRepair(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
 
+    // Fix 3: targeted diagnostic — file:line, test name and one-line error
+    // for each failure plus the run's diff stats, instead of the full dump.
+    const diagnostic = buildRepairDiagnostic(
+      this.lastTestFailures,
+      changedFileStats(this.cfg.workspace)
+    );
+
     const prompt = buildStatePrompt("REPAIR", this.cfg.task, {
+      context: diagnostic,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}** — repair attempt ${ctx.repairCount}`,
         "",
-        "Run the tests with `bun test` to see the current failures.",
+        "The test failures and your changed files are listed in the context above.",
+        "Focus ONLY on those failures — do not touch unrelated files.",
         "Fix the source code (not the tests) to make them pass.",
-        "Confirm with another `bun test` run.",
+        "Confirm with a `bun test` run on the affected files.",
       ],
     });
 
@@ -525,6 +582,26 @@ export class ProjectRun implements AgentHandler {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Trace a non-agent (orchestrator) event, e.g. workspace install or
+   *  scope decisions around REPAIR. */
+  private traceSystem(phase: string, meta: Record<string, unknown>): void {
+    try {
+      appendTrace(this.cfg.tracePath, {
+        ts: new Date().toISOString(),
+        runId: this.cfg.runId,
+        phase,
+        role: "system",
+        model: "-",
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: 0,
+        meta,
+      });
+    } catch {
+      // tracing is best-effort
+    }
+  }
 
   /** Roles whose prompts benefit from past lessons and preferences. */
   private static MEMORY_ROLES = new Set<Role>(["architect", "implementer"]);
