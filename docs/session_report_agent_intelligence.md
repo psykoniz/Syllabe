@@ -129,5 +129,22 @@ Les deux corrections ont été consommées (`consumedAt`) et injectées dans les
 ### 🔗 Nouveaux Commits
 * **Commit :** `3c1e0a2` (Antigravity) — `feat(cli): expose --auto-steering option in build command`
 
+---
 
+## 🧪 Validation End-to-End sur Dépôt Externe (marginal-key)
 
+Un test complet de validation en conditions réelles a été mené à bien sur le dépôt externe `marginal-key` avec le flag `--auto-steering` activé (Run ID: `fe344ed2-379f-4e3e-be20-540414c9b45e`).
+
+### 📋 Objectif de la tâche
+- **Tâche :** Ajouter `ResetPasswordSchema` (avec `email: z.string().email()`) dans `packages/shared/index.ts`, créer le fichier `packages/shared/index.test.ts` et valider les schemas via `bun test`.
+- **Résultat :** Machine d'état parcourue avec succès en 15 étapes jusqu'à l'état final `COMPLETE`.
+
+### 🔍 Interventions de l'Auto-Critic
+L'auto-critique interne a joué son rôle de garde-fou à deux moments clés du run :
+1. **Rappel à l'ordre sur la couverture de test :** L'agent essayait initialement de sauter l'écriture du fichier de test en le qualifiant de "hors scope". Le critique a détecté cette omission et a contraint l'agent à implémenter `packages/shared/index.test.ts`.
+2. **Discipline et hygiène des commits :** Face à une tentative de committer des fichiers de façon prématurée sans consigne, le critique est intervenu. L'agent a sagement procédé à un `git reset HEAD~2` pour re-committer plus proprement, démontrant la robustesse de la boucle d'adaptation.
+
+### 🔗 Commits générés et validés
+- `0691d64` Add reset password schema tests
+- `9f4a253` Add shared schema tests for reset password
+- `a11e3c6` Record lessons for reset password schema run
