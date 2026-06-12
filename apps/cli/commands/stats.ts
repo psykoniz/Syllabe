@@ -1,192 +1,202 @@
 import { Command } from "commander";
-import { readFileSync, existsSync } from "fs";
+import { Database } from "bun:sqlite";
+import { existsSync, readFileSync } from "fs";
+import { dirname, join } from "path";
 import { computeCost } from "@projectos/telemetry";
-import type { TraceEvent, TokenUsage } from "@projectos/telemetry";
+import type { TokenUsage, TraceEvent } from "@projectos/telemetry";
 
-// ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
-
-export interface StatsRow {
-  model: string;
-  calls: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  costUsd: number;
+export interface RunStatsRecord {
+  runId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  durationMs?: number | null;
+  costUsd?: number | null;
 }
 
-export interface StatsResult {
-  rows: StatsRow[];
-  total: Omit<StatsRow, "model">;
+export interface RunStatsSummary {
+  totalRuns: number;
+  completedRuns: number;
+  escalatedRuns: number;
+  averageDurationSeconds: number;
+  totalCostUsd: number;
 }
 
-// ---------------------------------------------------------------------------
-// Aggregation (pure, exported for tests)
-// ---------------------------------------------------------------------------
+export interface StatsReaders {
+  readRuns: (dbPath: string) => RunStatsRecord[];
+  readTraceEvents?: (tracePath: string) => TraceEvent[];
+}
 
-export function buildStats(events: TraceEvent[]): StatsResult {
-  // Count calls per model in insertion order
-  const callsPerModel = new Map<string, number>();
-  for (const e of events) {
-    callsPerModel.set(e.model, (callsPerModel.get(e.model) ?? 0) + 1);
+type StatsTableRow = [metric: string, value: string];
+
+function tableExists(db: Database, tableName: string): boolean {
+  const row = db.query<{ name: string }, [string]>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName);
+  return row !== null;
+}
+
+function tableColumns(db: Database, tableName: string): Set<string> {
+  return new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${tableName})`).all().map((column) => column.name));
+}
+
+function numericMetaExpression(columns: Set<string>, key: string): string {
+  if (!columns.has(key)) return "NULL";
+  return `CAST(${key}.value AS REAL)`;
+}
+
+export function readRuns(dbPath: string): RunStatsRecord[] {
+  if (!existsSync(dbPath)) return [];
+
+  const db = new Database(dbPath, { readonly: true, create: false });
+  try {
+    const runColumns = tableColumns(db, "runs");
+    const durationSelect = runColumns.has("duration_ms") ? "duration_ms as durationMs" : "NULL as durationMs";
+    const costSelect = runColumns.has("cost_usd") ? "cost_usd as costUsd" : "NULL as costUsd";
+
+    if (!tableExists(db, "run_meta")) {
+      return db
+        .query<RunStatsRecord, []>(
+          `SELECT run_id as runId, status, created_at as createdAt, updated_at as updatedAt,
+                  ${durationSelect}, ${costSelect}
+           FROM runs ORDER BY created_at ASC`
+        )
+        .all();
+    }
+
+    const metaColumns = new Set(
+      db.query<{ key: string }, []>(`SELECT DISTINCT key FROM run_meta WHERE key IN ('durationMs', 'duration_ms', 'costUsd', 'cost_usd')`)
+        .all()
+        .map((row) => row.key)
+    );
+    const durationMetaSelect = runColumns.has("duration_ms")
+      ? "duration_ms as durationMs"
+      : `COALESCE(${numericMetaExpression(metaColumns, "durationMs")}, ${numericMetaExpression(metaColumns, "duration_ms")}) as durationMs`;
+    const costMetaSelect = runColumns.has("cost_usd")
+      ? "cost_usd as costUsd"
+      : `COALESCE(${numericMetaExpression(metaColumns, "costUsd")}, ${numericMetaExpression(metaColumns, "cost_usd")}) as costUsd`;
+
+    return db
+      .query<RunStatsRecord, []>(
+        `SELECT runs.run_id as runId, runs.status, runs.created_at as createdAt, runs.updated_at as updatedAt,
+                ${durationMetaSelect}, ${costMetaSelect}
+         FROM runs
+         LEFT JOIN run_meta durationMs ON durationMs.run_id = runs.run_id AND durationMs.key = 'durationMs'
+         LEFT JOIN run_meta duration_ms ON duration_ms.run_id = runs.run_id AND duration_ms.key = 'duration_ms'
+         LEFT JOIN run_meta costUsd ON costUsd.run_id = runs.run_id AND costUsd.key = 'costUsd'
+         LEFT JOIN run_meta cost_usd ON cost_usd.run_id = runs.run_id AND cost_usd.key = 'cost_usd'
+         ORDER BY runs.created_at ASC`
+      )
+      .all();
+  } finally {
+    db.close();
   }
-
-  // Map events to TokenUsage, defaulting cache fields to 0
-  const usage: TokenUsage[] = events.map((e) => ({
-    model: e.model,
-    inputTokens: e.inputTokens,
-    outputTokens: e.outputTokens,
-    cacheReadTokens: e.cacheReadTokens ?? 0,
-    cacheWriteTokens: e.cacheWriteTokens ?? 0,
-  }));
-
-  // Delegate all cost computation to @projectos/telemetry
-  const { totalUsd, byModel } = computeCost(usage);
-
-  // Build rows in insertion order (first sighting of each model)
-  const rows: StatsRow[] = [];
-  for (const [model, calls] of callsPerModel) {
-    const m = byModel[model];
-    rows.push({
-      model,
-      calls,
-      inputTokens: m?.inputTokens ?? 0,
-      outputTokens: m?.outputTokens ?? 0,
-      cacheReadTokens: m?.cacheReadTokens ?? 0,
-      cacheWriteTokens: m?.cacheWriteTokens ?? 0,
-      costUsd: m?.usd ?? 0,
-    });
-  }
-
-  // Summing total row
-  const total: Omit<StatsRow, "model"> = {
-    calls: rows.reduce((s, r) => s + r.calls, 0),
-    inputTokens: rows.reduce((s, r) => s + r.inputTokens, 0),
-    outputTokens: rows.reduce((s, r) => s + r.outputTokens, 0),
-    cacheReadTokens: rows.reduce((s, r) => s + r.cacheReadTokens, 0),
-    cacheWriteTokens: rows.reduce((s, r) => s + r.cacheWriteTokens, 0),
-    costUsd: totalUsd,
-  };
-
-  return { rows, total };
 }
 
-// ---------------------------------------------------------------------------
-// Tolerant JSONL reader (same pattern as report.ts / replay.ts)
-// ---------------------------------------------------------------------------
+export function readTraceEvents(tracePath: string): TraceEvent[] {
+  if (!existsSync(tracePath)) return [];
 
-function readTraceEvents(filePath: string): TraceEvent[] {
-  if (!existsSync(filePath)) return [];
-  const raw = readFileSync(filePath, "utf8");
   const events: TraceEvent[] = [];
-  for (const line of raw.split("\n")) {
+  for (const line of readFileSync(tracePath, "utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+
     try {
       events.push(JSON.parse(trimmed) as TraceEvent);
     } catch {
-      // skip malformed lines
+      // Ignore malformed trace lines so one bad write does not break stats.
     }
   }
   return events;
 }
 
-// ---------------------------------------------------------------------------
-// Rendering helpers
-// ---------------------------------------------------------------------------
+function traceCostForRuns(runs: RunStatsRecord[], traceEvents: TraceEvent[]): number {
+  const runIds = new Set(runs.map((run) => run.runId));
+  const usage: TokenUsage[] = traceEvents
+    .filter((event) => runIds.has(event.runId))
+    .map((event) => ({
+      model: event.model,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      cacheReadTokens: event.cacheReadTokens ?? 0,
+      cacheWriteTokens: event.cacheWriteTokens ?? 0,
+    }));
 
-const COL = {
-  model: 24,
-  calls: 7,
-  input: 8,
-  output: 8,
-  cacheR: 8,
-  cacheW: 8,
-  cost: 12,
-};
-
-const SEPARATOR = "─".repeat(
-  COL.model + COL.calls + COL.input + COL.output + COL.cacheR + COL.cacheW + COL.cost + 6
-);
-
-function pad(s: string | number, width: number, right = true): string {
-  const str = String(s);
-  return right ? str.padStart(width) : str.padEnd(width);
+  return computeCost(usage).totalUsd;
 }
 
-function renderTable(result: StatsResult): string {
-  const header =
-    pad("Model", COL.model, false) +
-    pad("Calls", COL.calls) +
-    pad("Input", COL.input) +
-    pad("Output", COL.output) +
-    pad("CacheR", COL.cacheR) +
-    pad("CacheW", COL.cacheW) +
-    pad("Cost USD", COL.cost);
+function durationMsForRun(run: RunStatsRecord): number | null {
+  if (typeof run.durationMs === "number" && Number.isFinite(run.durationMs) && run.durationMs >= 0) return run.durationMs;
 
-  const lines: string[] = [header, SEPARATOR];
-
-  for (const row of result.rows) {
-    lines.push(
-      pad(row.model, COL.model, false) +
-        pad(row.calls, COL.calls) +
-        pad(row.inputTokens, COL.input) +
-        pad(row.outputTokens, COL.output) +
-        pad(row.cacheReadTokens, COL.cacheR) +
-        pad(row.cacheWriteTokens, COL.cacheW) +
-        pad(`$${row.costUsd.toFixed(4)}`, COL.cost)
-    );
-  }
-
-  const t = result.total;
-  lines.push(SEPARATOR);
-  lines.push(
-    pad("TOTAL", COL.model, false) +
-      pad(t.calls, COL.calls) +
-      pad(t.inputTokens, COL.input) +
-      pad(t.outputTokens, COL.output) +
-      pad(t.cacheReadTokens, COL.cacheR) +
-      pad(t.cacheWriteTokens, COL.cacheW) +
-      pad(`$${t.costUsd.toFixed(4)}`, COL.cost)
-  );
-
-  return lines.join("\n");
+  const createdAt = Date.parse(run.createdAt);
+  const updatedAt = Date.parse(run.updatedAt);
+  if (Number.isNaN(createdAt) || Number.isNaN(updatedAt) || updatedAt < createdAt) return null;
+  return updatedAt - createdAt;
 }
 
-function renderJson(result: StatsResult): string {
-  return JSON.stringify(
-    {
-      byModel: result.rows,
-      total: result.total,
-    },
-    null,
-    2
-  );
+function isCompletedStatus(status: string): boolean {
+  return status === "complete" || status === "completed";
 }
 
-// ---------------------------------------------------------------------------
-// Commander command
-// ---------------------------------------------------------------------------
+function isEscalatedStatus(status: string): boolean {
+  return status === "escalated" || status === "failed";
+}
+
+export function summarizeRuns(runs: RunStatsRecord[], traceEvents: TraceEvent[] = []): RunStatsSummary {
+  const durations = runs.map(durationMsForRun).filter((duration): duration is number => duration !== null);
+  const totalDurationMs = durations.reduce((sum, duration) => sum + duration, 0);
+  const dbCostUsd = runs.reduce((sum, run) => {
+    if (typeof run.costUsd !== "number" || !Number.isFinite(run.costUsd)) return sum;
+    return sum + run.costUsd;
+  }, 0);
+  const hasDbCost = runs.some((run) => typeof run.costUsd === "number" && Number.isFinite(run.costUsd));
+
+  return {
+    totalRuns: runs.length,
+    completedRuns: runs.filter((run) => isCompletedStatus(run.status)).length,
+    escalatedRuns: runs.filter((run) => isEscalatedStatus(run.status)).length,
+    averageDurationSeconds: durations.length === 0 ? 0 : totalDurationMs / durations.length / 1000,
+    totalCostUsd: hasDbCost ? dbCostUsd : traceCostForRuns(runs, traceEvents),
+  };
+}
+
+function pad(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
+function formatStatsTableRows(rows: StatsTableRow[]): string {
+  const metricWidth = Math.max(...rows.map(([metric]) => metric.length));
+  const valueWidth = Math.max(...rows.map(([, value]) => value.length));
+  const separator = `${"-".repeat(metricWidth)}  ${"-".repeat(valueWidth)}`;
+
+  return rows
+    .map(([metric, value], index) => {
+      const line = `${pad(metric, metricWidth)}  ${pad(value, valueWidth)}`;
+      return index === 0 ? `${line}\n${separator}` : line;
+    })
+    .join("\n");
+}
+
+export function renderStatsTable(summary: RunStatsSummary): string {
+  const rows: StatsTableRow[] = [
+    ["Metric", "Value"],
+    ["Total runs", String(summary.totalRuns)],
+    ["Completed", String(summary.completedRuns)],
+    ["Escalated", String(summary.escalatedRuns)],
+    ["Average duration (s)", summary.averageDurationSeconds.toFixed(2)],
+    ["Total cost (USD)", `$${summary.totalCostUsd.toFixed(4)}`],
+  ];
+
+  return formatStatsTableRows(rows);
+}
+
+export function buildStatsOutput(dbPath: string, readers: StatsReaders = { readRuns, readTraceEvents }): string {
+  const runs = readers.readRuns(dbPath);
+  const traceEvents = readers.readTraceEvents?.(join(dirname(dbPath), "traces.jsonl")) ?? [];
+  return renderStatsTable(summarizeRuns(runs, traceEvents));
+}
 
 export const statsCommand = new Command("stats")
-  .description("Print a per-model cost table from a traces.jsonl file")
-  .option("--traces <path>", "JSONL trace log path", ".projectos/traces.jsonl")
-  .option("--json", "Output as JSON instead of a text table")
-  .action((opts: { traces: string; json?: boolean }) => {
-    const events = readTraceEvents(opts.traces);
-
-    if (events.length === 0) {
-      console.log(`No trace events found in ${opts.traces}`);
-      return;
-    }
-
-    const result = buildStats(events);
-
-    if (opts.json) {
-      console.log(renderJson(result));
-    } else {
-      console.log(renderTable(result));
-    }
+  .description("Print a summary table for ProjectOS runs")
+  .option("--db <path>", "SQLite database path", ".projectos/runs.db")
+  .action((opts: { db: string }) => {
+    console.log(buildStatsOutput(opts.db));
   });
