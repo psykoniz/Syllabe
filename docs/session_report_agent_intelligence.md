@@ -60,8 +60,6 @@ Tous les changements ci-dessus ont été indexés, commités et poussés sur la 
 * **Commit hash :** `73702e9`
 * **Message de commit :** `feat: improve agent intelligence with 6 key features (semantic memory, structured repair, auto-steering critic, smart repo context, harness optimizer v2, skill store)`
 
----
-
 ## 🧪 Pourquoi les tâches de Dogfooding proposées améliorent Syllabe ?
 
 La pratique du dogfooding (faire travailler l'agent sur son propre dépôt) apporte des améliorations directes et quantifiables au projet :
@@ -72,3 +70,22 @@ La pratique du dogfooding (faire travailler l'agent sur son propre dépôt) appo
    * **Amélioration :** En codant ces tests, l'agent s'assure qu'aucune réactivité future ne viendra casser la logique d'auto-critique ou d'embeddings sémantiques. Cela valide également les cas limites (ex: gestion des erreurs d'API d'embeddings, gestion du cache).
 3. **Création d'un chargeur `.projectos.toml` :**
    * **Amélioration :** L'expérience développeur (DX) s'en trouve décuplée. Au lieu de surcharger le shell de variables d'environnement (`PROJECTOS_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`), un unique fichier déclaratif configure l'ensemble des comportements de l'agent, le rendant prêt à l'emploi.
+
+---
+
+## 🐶 Tâches de Dogfooding Réalisées & Validées
+
+Au cours de cette phase, nous avons résolu et validé les points suivants :
+* **Migration `os.tmpdir()` :** Remplacement de l'intégralité des chemins `/tmp` codés en dur par `os.tmpdir()` dynamique dans les 13 fichiers de tests.
+* **Compatibilité Windows & Git Bash :** Ajustement de la détection du shell sous Windows dans `packages/tools/shell/bash.ts` pour résoudre automatiquement Git Bash (`C:\Program Files\Git\bin\bash.exe`) s'il est présent, évitant les crashs WSL.
+* **Mode Thinking pour GPT-5.5 (OpenAI-compatible) :** Support natif du mode *reasoning* (`max_completion_tokens` et `reasoning_effort: "high"`) pour les modèles contenant `gpt-5` ou `codex` lors des phases de planification (`architect` et `reviewer`).
+
+### 📊 Coût & Télémétrie de la Tâche
+* **Exécution locale :** Étant donné que ces modifications de dogfooding ont été implémentées directement par l'agent de pair programming en modifiant les fichiers et en exécutant `bun test` manuellement (sans démarrer la boucle autonome interne de `ProjectOS`), le coût enregistré dans le fichier de traces local `.projectos/traces.jsonl` est de **$0.00**.
+
+### 🔗 Nouveaux Commits
+Les modifications ont été poussées sur `main` :
+* **Commit :** `a17d3b5`
+* **Message :** `fix: make tests cross-platform and fix Git Bash resolution on Windows`
+* **Dépôt :** [psykoniz/Syllabe](https://github.com/psykoniz/Syllabe)
+
