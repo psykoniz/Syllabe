@@ -23,6 +23,7 @@ export const buildCommand = new Command("build")
   .option("--repo <url-or-path>", "Existing git repository to work on (URL or local path)")
   .option("--base-branch <name>", "Base branch to clone from", "main")
   .option("--harness-dir <path>", "Harness dir with promoted config (promotions.json)", "~/.projectos/harness")
+  .option("--auto-steering", "Enable the lightweight LLM critic between state transitions", false)
   .action(async (opts) => {
     // PROJECTOS_RUN_ID lets a parent process (e.g. the web UI) pre-assign the
     // run id so it can track the run it just launched.
@@ -80,6 +81,7 @@ export const buildCommand = new Command("build")
       gitUrl: opts.repo,
       baseBranch: opts.baseBranch,
       workBranch,
+      autoSteering: opts.autoSteering,
     });
 
     try {
