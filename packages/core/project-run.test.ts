@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { Database } from "bun:sqlite";
@@ -7,7 +8,7 @@ import { ProjectRun } from "./project-run";
 import type { ProjectRunConfig } from "./project-run";
 import type { CreateMessageFn, ContentBlock } from "./agent-runner";
 
-const TMP_BASE = "/tmp/projectos-run-test";
+const TMP_BASE = join(tmpdir(), "projectos-run-test");
 
 function makeWorkspace(label: string) {
   const dir = join(TMP_BASE, label);

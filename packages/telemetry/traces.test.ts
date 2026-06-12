@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { appendTrace } from "./traces";
 import type { TraceEvent } from "./traces";
 
-const TMP = "/tmp/projectos-test-traces.jsonl";
+const TMP = join(tmpdir(), "projectos-test-traces.jsonl");
 
 function cleanup() {
   if (existsSync(TMP)) rmSync(TMP);
@@ -40,12 +42,12 @@ describe("appendTrace", () => {
   });
 
   it("creates parent directory if missing", () => {
-    const nested = "/tmp/projectos-test-nested/deep/traces.jsonl";
+    const nested = join(tmpdir(), "projectos-test-nested", "deep", "traces.jsonl");
     try {
       appendTrace(nested, event);
       expect(existsSync(nested)).toBe(true);
     } finally {
-      rmSync("/tmp/projectos-test-nested", { recursive: true, force: true });
+      rmSync(join(tmpdir(), "projectos-test-nested"), { recursive: true, force: true });
     }
   });
 });

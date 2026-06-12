@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { HarnessOptimizer, validateCandidateConfig } from "./harness-optimizer";
 import type { FailurePattern, CandidateConfig } from "./harness-optimizer";
@@ -8,7 +9,7 @@ import { Frontier, DEFAULT_PROMOTION_RULES } from "@projectos/evals";
 import { BaselineStore } from "@projectos/evals";
 import type { BenchmarkTask } from "@projectos/evals";
 
-const TMP = "/tmp/projectos-optimizer-test";
+const TMP = join(tmpdir(), "projectos-optimizer-test");
 
 beforeEach(() => mkdirSync(TMP, { recursive: true }));
 afterEach(() => rmSync(TMP, { recursive: true, force: true }));

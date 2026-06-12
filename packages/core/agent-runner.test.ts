@@ -12,9 +12,10 @@ import { BashTool } from "@projectos/tools";
 import { GitTools } from "@projectos/tools";
 import { autoDeny } from "@projectos/policy";
 import { mkdirSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
-const TMP = "/tmp/projectos-runner-test";
+const TMP = join(tmpdir(), "projectos-runner-test");
 
 function makeFakeCtx() {
   mkdirSync(TMP, { recursive: true });
