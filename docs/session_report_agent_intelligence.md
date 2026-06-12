@@ -100,5 +100,34 @@ L'utilisateur (et Claude) a consolidé et câblé proprement l'ensemble des modu
 3. **Optimisation CLI :** Réécriture de la commande `stats` pour correspondre au schéma de base réel (`run_meta` + `checkpoints`) et ajout d'une nouvelle commande `runs` pour lister sous forme de tableau les 10 dernières exécutions.
 4. **Intégration HarnessOptimizerV2 :** Câblage de la méthode `proposeLLM()` dans le flux `self-improve` avec injection des 3000 derniers caractères de traces d'erreurs en contexte.
 5. **Fallback d'Embeddings OpenAI :** Fallback automatique de la clé d'embeddings vers `OPENAI_API_KEY` et normalisation de `OPENAI_BASE_URL` pour les configurations OpenAI-compatibles out-of-the-box.
+6. **Exposition de l'option `--auto-steering` :** Intégration du flag dans la commande `build` de l'interface de ligne de commande (CLI) pour activer ou désactiver à la demande le critique de transition.
+
+---
+
+## 🚦 Validation en Réel de l'Auto-Steering
+
+Pour valider l'auto-steering en conditions réelles avec le modèle `gpt-5.5` sur le gateway `codex-everywhere`, une tâche de création de fichier a été exécutée avec le flag `--auto-steering` activé :
+
+### 📋 Commande exécutée
+```bash
+bun apps/cli/index.ts build --task "Create a file named critic_test.txt containing 'critic validated'." --workspace ./dogfood-steering-workspace --auto-steering --yes --model-override gpt-5.5
+```
+
+### 🔍 Corrections injectées par le critique
+Le critique de transition (exécuté après chaque phase via le LLM) a correctement analysé l'avancement et a écrit les messages de correction suivants dans le fichier de steering de la session (`.projectos/steering/<runId>.jsonl`) :
+
+1. **Transition CLARIFY → DESIGN (Correction de cadrage) :**
+   > `[auto-critic] Create critic_test.txt with exactly critic validated; the task is simple and should move directly to implementation/verification, not stop at design.`
+   * *Impact :* Redirige l'agent pour éviter de sur-concevoir le plan et foncer directement sur le livrable.
+
+2. **Transition IMPLEMENT → TEST (Correction de vérification) :**
+   > `[auto-critic] Verify critic_test.txt exists and contains exactly critic validated; the last output only says pass and doesn’t demonstrate the required file content.`
+   * *Impact :* Force l'agent à effectuer un test explicite sur le contenu du fichier plutôt que de se fier à des logs de réussite génériques.
+
+Les deux corrections ont été consommées (`consumedAt`) et injectées dans les invites suivantes des agents en cours d'exécution.
+
+### 🔗 Nouveaux Commits
+* **Commit :** `3c1e0a2` (Antigravity) — `feat(cli): expose --auto-steering option in build command`
+
 
 
