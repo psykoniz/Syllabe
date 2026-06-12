@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "child_process";
 
 // Test the formatTable output shape by importing the internal helper indirectly
 // via the actual stats output on a known DB state.
@@ -32,8 +33,7 @@ describe("stats formatTable", () => {
     expect(table).toContain("┼");
   });
 
-  it("shows zero stats when DB does not exist", async () => {
-    const { spawnSync } = await import("child_process");
+  it("shows zero stats when DB does not exist", () => {
     const result = spawnSync("bun", [
       "run", "apps/cli/index.ts", "stats",
       "--db", "/tmp/nonexistent-projectos.db",

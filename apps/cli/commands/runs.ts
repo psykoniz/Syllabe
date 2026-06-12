@@ -30,24 +30,11 @@ function tableExists(db: Database, tableName: string): boolean {
   return row !== null;
 }
 
-function getTableColumns(db: Database, tableName: string): Set<string> {
-  return new Set(
-    db
-      .query<{ name: string }, []>(`PRAGMA table_info(${tableName})`)
-      .all()
-      .map((column) => column.name)
-  );
-}
-
-function hasColumns(columns: Set<string>, requiredColumns: string[]): boolean {
-  return requiredColumns.every((column) => columns.has(column));
-}
-
-function latestCheckpointJoin(hasCheckpoints: boolean): string {
+function checkpointsSubquery(hasCheckpoints: boolean): string {
   if (!hasCheckpoints) {
-    return `LEFT JOIN (SELECT NULL AS run_id, NULL AS state, NULL AS ts WHERE 0) latest ON latest.run_id = rm.run_id`;
+    // No checkpoints table — produce NULL columns so state/ts are absent.
+    return `LEFT JOIN (SELECT NULL AS run_id, NULL AS state, NULL AS ts LIMIT 0) latest ON 0`;
   }
-
   return `LEFT JOIN (
          SELECT c.run_id, c.state, c.ts
          FROM checkpoints c
@@ -59,7 +46,7 @@ function latestCheckpointJoin(hasCheckpoints: boolean): string {
        ) latest ON latest.run_id = rm.run_id`;
 }
 
-function loadKeyValueRunRows(db: Database, hasCheckpoints: boolean): RunMetaRow[] {
+function loadRunRows(db: Database, hasCheckpoints: boolean): RunMetaRow[] {
   return db
     .query<RunMetaRow, [number]>(
       `SELECT
@@ -70,27 +57,9 @@ function loadKeyValueRunRows(db: Database, hasCheckpoints: boolean): RunMetaRow[
          latest.state AS latestState,
          latest.ts AS latestTs
        FROM run_meta rm
-       ${latestCheckpointJoin(hasCheckpoints)}
+       ${checkpointsSubquery(hasCheckpoints)}
        GROUP BY rm.run_id
        ORDER BY COALESCE(startedAt, latestTs, '') DESC, rm.run_id DESC
-       LIMIT ?`
-    )
-    .all(RECENT_RUN_LIMIT);
-}
-
-function loadColumnRunRows(db: Database, hasCheckpoints: boolean): RunMetaRow[] {
-  return db
-    .query<RunMetaRow, [number]>(
-      `SELECT
-         rm.run_id AS runId,
-         rm.startedAt AS startedAt,
-         rm.model AS model,
-         rm.task AS task,
-         latest.state AS latestState,
-         latest.ts AS latestTs
-       FROM run_meta rm
-       ${latestCheckpointJoin(hasCheckpoints)}
-       ORDER BY COALESCE(rm.startedAt, latest.ts, '') DESC, rm.run_id DESC
        LIMIT ?`
     )
     .all(RECENT_RUN_LIMIT);
@@ -99,17 +68,17 @@ function loadColumnRunRows(db: Database, hasCheckpoints: boolean): RunMetaRow[] 
 export function loadRecentRuns(db: Database): RunListRow[] {
   if (!tableExists(db, "run_meta")) return [];
 
-  const runMetaColumns = getTableColumns(db, "run_meta");
-  if (!runMetaColumns.has("run_id")) return [];
+  const runMetaColumns = new Set(
+    db.query<{ name: string }, []>(`PRAGMA table_info(run_meta)`).all().map((c) => c.name)
+  );
+  if (!runMetaColumns.has("run_id") || !runMetaColumns.has("key") || !runMetaColumns.has("value")) return [];
 
-  const checkpointColumns = tableExists(db, "checkpoints") ? getTableColumns(db, "checkpoints") : new Set<string>();
-  const hasCheckpoints = hasColumns(checkpointColumns, ["run_id", "seq", "state", "ts"]);
-  const hasKeyValueRunMeta = hasColumns(runMetaColumns, ["key", "value"]);
-  const hasColumnRunMeta = hasColumns(runMetaColumns, ["startedAt", "model", "task"]);
+  const hasCheckpoints =
+    tableExists(db, "checkpoints") &&
+    new Set(db.query<{ name: string }, []>(`PRAGMA table_info(checkpoints)`).all().map((c) => c.name))
+      .has("seq");
 
-  if (!hasKeyValueRunMeta && !hasColumnRunMeta) return [];
-
-  const rows = hasKeyValueRunMeta ? loadKeyValueRunRows(db, hasCheckpoints) : loadColumnRunRows(db, hasCheckpoints);
+  const rows = loadRunRows(db, hasCheckpoints);
 
   return rows.map((row) => ({
     runId: row.runId,
