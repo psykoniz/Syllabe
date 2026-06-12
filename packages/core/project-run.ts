@@ -74,6 +74,10 @@ export interface ProjectRunConfig {
   baseBranch?: string;
   /** Branch the run works on (default `projectos/run-<runId8>`) */
   workBranch?: string;
+  /** Enable the lightweight LLM critic between state transitions (haiku by
+   *  default, ~$0.0002/transition). Corrections are injected as steering
+   *  messages consumed by the next state's prompt. */
+  autoSteering?: boolean;
 }
 
 /** Framing prepended to the repo context so it never expands the task scope. */
@@ -120,6 +124,8 @@ export class ProjectRun implements AgentHandler {
   private memoryBlock: string | null = null;
   /** Structured failures from the last failing TEST run, for REPAIR. */
   private lastTestFailures: TestFailure[] = [];
+  /** Final text of the most recent agent call, fed to the auto-steering critic. */
+  private lastAgentText = "";
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -664,8 +670,10 @@ export class ProjectRun implements AgentHandler {
   private static MEMORY_ROLES = new Set<Role>(["architect", "implementer"]);
 
   /** Hermes-style memory block: user prefs + global/project lessons + skills
-   *  matched against the task. Built once per run, capped at ~3k chars. */
-  private buildMemoryBlock(): string {
+   *  matched against the task. Built once per run, capped at ~3k chars.
+   *  Lessons use semantic search when embeddings are configured
+   *  (PROJECTOS_EMBEDDINGS_API_KEY), substring matching otherwise. */
+  private async buildMemoryBlock(): Promise<string> {
     if (this.memoryBlock !== null) return this.memoryBlock;
     try {
       const home = process.env.HOME ?? "~";
@@ -680,7 +688,7 @@ export class ProjectRun implements AgentHandler {
 
       const parts = [
         userMem.toContextBlock(),
-        globalMem.toContextBlock(this.cfg.task),
+        await globalMem.toSemanticContextBlock(this.cfg.task),
         localLessons.toContextBlock(this.cfg.task),
         skillStore.toContextBlock(),
       ].filter(Boolean);
@@ -747,7 +755,7 @@ export class ProjectRun implements AgentHandler {
           }
         : undefined;
 
-    const memory = ProjectRun.MEMORY_ROLES.has(role) ? this.buildMemoryBlock() : "";
+    const memory = ProjectRun.MEMORY_ROLES.has(role) ? await this.buildMemoryBlock() : "";
 
     // Mid-run operator steering: inject pending instructions exactly once
     let steeringBlock = "";
@@ -789,6 +797,7 @@ export class ProjectRun implements AgentHandler {
       durationMs: Date.now() - start,
     });
 
+    this.lastAgentText = result.finalText;
     return result;
   }
 
@@ -819,6 +828,18 @@ export class ProjectRun implements AgentHandler {
         runId: this.cfg.runId,
         db: this.cfg.db,
         handler: this,
+        ...(this.cfg.autoSteering
+          ? {
+              autoSteering: {
+                createMessage: this.cfg.createMessage,
+                model: this.cfg.modelOverride,
+                workspace: this.cfg.workspace,
+                runId: this.cfg.runId,
+                task: this.cfg.task,
+                getLastOutput: () => this.lastAgentText,
+              },
+            }
+          : {}),
       });
     } finally {
       await this.browserSession?.close();

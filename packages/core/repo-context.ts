@@ -228,7 +228,9 @@ export function findRelevantFiles(
     const r = spawnSync(
       "grep",
       ["-rl", "--include=*.ts", "--include=*.tsx", "--include=*.js",
-       "--include=*.json", "--include=*.md", kw, "."],
+       "--include=*.json", "--include=*.md",
+       ...[...SKIP_DIRS].map((d) => `--exclude-dir=${d}`),
+       "--fixed-strings", kw, "."],
       { cwd: workspace, encoding: "utf8", timeout: 5000 }
     );
     if (r.status === 0) {

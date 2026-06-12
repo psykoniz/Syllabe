@@ -21,6 +21,9 @@ export interface AutoSteeringOptions {
   task: string;
   /** States to skip (trivial pass-throughs that don't need review) */
   skipStates?: Set<State>;
+  /** Returns the most recent agent output, so the critic sees what actually
+   *  happened in the state rather than just counters. */
+  getLastOutput?: () => string;
 }
 
 const CRITIC_PROMPT = [

@@ -9,6 +9,7 @@ import { selfImproveCommand } from "./commands/self-improve";
 import { replayCommand } from "./commands/replay";
 import { webCommand } from "./commands/web";
 import { statsCommand } from "./commands/stats";
+import { runsCommand } from "./commands/runs";
 
 const program = new Command("projectos")
   .version("0.0.1")
@@ -23,5 +24,6 @@ program.addCommand(selfImproveCommand);
 program.addCommand(replayCommand);
 program.addCommand(webCommand);
 program.addCommand(statsCommand);
+program.addCommand(runsCommand);
 
 program.parse(process.argv);
