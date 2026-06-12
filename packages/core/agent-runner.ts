@@ -78,7 +78,12 @@ export function reasoningParams(
   model: string,
   effort?: EffortLevel
 ): Pick<CreateMessageParams, "thinking" | "output_config"> {
-  if (model.includes("fable") || model.includes("opus")) {
+  if (
+    model.includes("fable") ||
+    model.includes("opus") ||
+    model.includes("gpt-5") ||
+    model.includes("codex")
+  ) {
     return { thinking: { type: "adaptive" }, output_config: { effort: effort ?? "high" } };
   }
   return {};
