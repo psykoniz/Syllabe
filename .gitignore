@@ -3,6 +3,8 @@ dist/
 .projectos/
 *.db
 *.db-journal
+# dogfood workspaces — ephemeral run artifacts, not part of the codebase
+dogfood-*/
 # eval run outputs — keep baseline.json but not per-run results
 evals/results/*/
 evals/results/*.json
