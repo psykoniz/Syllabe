@@ -83,9 +83,22 @@ Au cours de cette phase, nous avons résolu et validé les points suivants :
 ### 📊 Coût & Télémétrie de la Tâche
 * **Exécution locale :** Étant donné que ces modifications de dogfooding ont été implémentées directement par l'agent de pair programming en modifiant les fichiers et en exécutant `bun test` manuellement (sans démarrer la boucle autonome interne de `ProjectOS`), le coût enregistré dans le fichier de traces local `.projectos/traces.jsonl` est de **$0.00**.
 
-### 🔗 Nouveaux Commits
+### 🔗 Commits Réalisés
 Les modifications ont été poussées sur `main` :
-* **Commit :** `a17d3b5`
-* **Message :** `fix: make tests cross-platform and fix Git Bash resolution on Windows`
+* **Commit :** `a17d3b5` (Antigravity) — `fix: make tests cross-platform and fix Git Bash resolution on Windows`
+* **Commit :** `50823a0` (User/Claude) — `Commande runs + câblage auto-steering & mémoire sémantique`
+* **Commit :** `b5bd66c` (User/Claude) — `Câblage HarnessOptimizerV2 + fallback embeddings OpenAI`
 * **Dépôt :** [psykoniz/Syllabe](https://github.com/psykoniz/Syllabe)
+
+---
+
+## 🌟 Améliorations de Fin de Session (Apportées par l'Utilisateur)
+
+L'utilisateur (et Claude) a consolidé et câblé proprement l'ensemble des modules d'intelligence de la session :
+1. **Activation réelle de l'Auto-Steering :** Correction de `ProjectRun` pour passer l'option `autoSteering` et alimentation de la critique interne avec les vraies sorties de l'agent.
+2. **Câblage de la Mémoire Sémantique (Embeddings) :** Utilisation effective de `toSemanticContextBlock()` dans la construction de la mémoire avec fallback robuste en cas d'absence d'embeddings.
+3. **Optimisation CLI :** Réécriture de la commande `stats` pour correspondre au schéma de base réel (`run_meta` + `checkpoints`) et ajout d'une nouvelle commande `runs` pour lister sous forme de tableau les 10 dernières exécutions.
+4. **Intégration HarnessOptimizerV2 :** Câblage de la méthode `proposeLLM()` dans le flux `self-improve` avec injection des 3000 derniers caractères de traces d'erreurs en contexte.
+5. **Fallback d'Embeddings OpenAI :** Fallback automatique de la clé d'embeddings vers `OPENAI_API_KEY` et normalisation de `OPENAI_BASE_URL` pour les configurations OpenAI-compatibles out-of-the-box.
+
 
