@@ -5,5 +5,5 @@ export { BlueprintSession, BLUEPRINT_FILES } from "./architect";
 export type { BlueprintContent, AdrEntry, BlueprintFile, BlueprintSessionOptions } from "./architect";
 export { Reviewer, validateVerdict } from "./reviewer";
 export type { ReviewVerdict, ReviewSession, Risk, RiskSeverity } from "./reviewer";
-export { HarnessOptimizer, validateCandidateConfig } from "./harness-optimizer";
-export type { CandidateConfig, FailurePattern, OptimizerProposal } from "./harness-optimizer";
+export { HarnessOptimizer, HarnessOptimizerV2, validateCandidateConfig } from "./harness-optimizer";
+export type { CandidateConfig, FailurePattern, OptimizerProposal, CreateMessageFn as OptimizerCreateMessageFn } from "./harness-optimizer";

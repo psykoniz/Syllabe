@@ -170,13 +170,21 @@ export class SemanticIndex {
 // ─── Factory: create a SemanticIndex from environment configuration ──────────
 
 /** Create a SemanticIndex if embedding credentials are available.
- *  Returns null when PROJECTOS_EMBEDDINGS_API_KEY is not set. */
+ *  Uses PROJECTOS_EMBEDDINGS_API_KEY, falling back to OPENAI_API_KEY (and
+ *  OPENAI_BASE_URL) so an existing OpenAI-compatible setup works without
+ *  extra configuration. Returns null when no key is set. */
 export function createSemanticIndex(indexPath: string): SemanticIndex | null {
-  const apiKey = process.env.PROJECTOS_EMBEDDINGS_API_KEY;
+  const apiKey =
+    process.env.PROJECTOS_EMBEDDINGS_API_KEY ?? process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
 
-  const baseUrl =
-    process.env.PROJECTOS_EMBEDDINGS_BASE_URL ?? "https://api.openai.com/v1";
+  // Normalize: providers expect <base>/embeddings where base ends in /v1.
+  const rawBase =
+    process.env.PROJECTOS_EMBEDDINGS_BASE_URL ??
+    process.env.OPENAI_BASE_URL ??
+    "https://api.openai.com/v1";
+  const trimmed = rawBase.replace(/\/+$/, "");
+  const baseUrl = /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
   const model =
     process.env.PROJECTOS_EMBEDDINGS_MODEL ?? "text-embedding-3-small";
 
