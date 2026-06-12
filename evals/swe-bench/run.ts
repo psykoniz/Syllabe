@@ -17,10 +17,14 @@
  *
  *   # With auto-steering critic
  *   bun evals/swe-bench/run.ts --limit 20 --auto-steering
+ *
+ * This is the SOLVE phase only: it produces a predictions JSONL. Score it
+ * with the official Docker harness:
+ *   bash evals/swe-bench/run-official-eval.sh <predictions.jsonl>
  */
 
 import { loadSweBenchLite } from "./loader";
-import { runSWEBenchSuite, formatSWEBenchTable } from "./runner";
+import { runSWEBenchSuite, formatSummary } from "./runner";
 
 const args = process.argv.slice(2);
 
@@ -39,15 +43,13 @@ const repoFilter = opt("repo") ? [opt("repo") as string] : undefined;
 const instanceId = opt("instance-id");
 const modelOverride = opt("model-override") ?? process.env.PROJECTOS_MODEL_OVERRIDE;
 const costCap = parseFloat(opt("cost-cap", "50") as string);
-const concurrency = parseInt(opt("concurrency", "1") as string, 10);
 const autoSteering = flag("auto-steering");
 
-console.log("SWE-bench Lite — ProjectOS");
-console.log(`Model:        ${modelOverride ?? "default (from env)"}`);
-console.log(`Limit:        ${instanceId ? 1 : limit} instance(s)`);
-console.log(`Cost cap:     $${costCap}`);
+console.log("SWE-bench Lite — ProjectOS (solve phase → predictions)");
+console.log(`Model:         ${modelOverride ?? "default (from env)"}`);
+console.log(`Limit:         ${instanceId ? 1 : limit} instance(s)`);
+console.log(`Cost cap:      $${costCap}`);
 console.log(`Auto-steering: ${autoSteering}`);
-console.log(`Concurrency:  ${concurrency}`);
 
 const allInstances = await loadSweBenchLite({ limit: instanceId ? undefined : limit + offset, offset: 0, repoFilter });
 
@@ -66,9 +68,7 @@ const suite = await runSWEBenchSuite(instances, {
   modelOverride,
   autoSteering,
   costCapUsd: costCap,
-  concurrency,
   maxIterationsPerState: 30,
 });
 
-console.log("\n" + formatSWEBenchTable(suite));
-console.log(`\nResolved: ${suite.resolved}/${suite.totalInstances} (${(suite.resolvedRate * 100).toFixed(1)}%)`);
+console.log("\n" + formatSummary(suite));
