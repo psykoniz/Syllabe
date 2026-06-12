@@ -14,9 +14,10 @@
  *   4. append a prediction line; the official harness verifies later
  */
 
-import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
+import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "child_process";
 import { buildTaskPrompt } from "./loader";
@@ -86,8 +87,7 @@ export async function runInstance(
   } = {}
 ): Promise<{ result: SWEBenchRunResult; predictionLine: string | null }> {
   const start = Date.now();
-  const workspace = `/tmp/projectos-swe-${instance.instance_id}-${randomUUID().slice(0, 8)}`;
-  mkdirSync(join(workspace, ".projectos"), { recursive: true });
+  const workspace = join(tmpdir(), `projectos-swe-${instance.instance_id}-${randomUUID().slice(0, 8)}`);
 
   let agentState = "error";
   let costUsd = 0;
@@ -101,6 +101,7 @@ export async function runInstance(
     if (!setupWorkspace(instance, workspace)) {
       notes = "clone failed";
     } else {
+      mkdirSync(join(workspace, ".projectos"), { recursive: true });
       const db = new Database(dbPath, { create: true });
       const { ProjectRun, defaultCreateMessage } = await import("@projectos/core");
       const { computeCost } = await import("@projectos/telemetry");
@@ -138,7 +139,11 @@ export async function runInstance(
   } catch (err) {
     notes = `error: ${(err as Error).message}`;
   } finally {
-    spawnSync("rm", ["-rf", workspace]);
+    try {
+      rmSync(workspace, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   const producedPatch = patch.trim().length > 0;
