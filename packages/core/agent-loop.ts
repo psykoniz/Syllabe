@@ -56,7 +56,7 @@ export async function runAgentLoop(
         prevState,
         next.state,
         next,
-        "",  // lastAgentOutput — will be enriched when the handler exposes it
+        opts.autoSteering.getLastOutput?.() ?? "",
         opts.autoSteering,
       );
       opts.onSteeringResult?.(prevState, next.state, result);
