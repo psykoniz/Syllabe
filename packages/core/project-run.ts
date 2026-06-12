@@ -162,7 +162,16 @@ export class ProjectRun implements AgentHandler {
   /** Clone the configured repository into the workspace, record the base SHA
    *  and switch to the dedicated work branch. No-op when gitUrl is unset. */
   private setupRepo(): void {
-    if (!this.cfg.gitUrl) return;
+    if (!this.cfg.gitUrl) {
+      // Pre-populated workspace (e.g. an external clone checked out at a
+      // specific commit): still build repo context so the agent can see the
+      // existing codebase rather than working blind.
+      if (existsSync(join(this.cfg.workspace, ".git"))) {
+        this.repoContext = buildSmartRepoContext(this.cfg.workspace, this.cfg.task);
+        this.repoTree = buildRepoTree(this.cfg.workspace);
+      }
+      return;
+    }
 
     const baseBranch = this.cfg.baseBranch ?? "main";
     const workBranch =
