@@ -35,7 +35,7 @@ export function ensureNodeModules(workspace: string): InstallResult {
     existsSync(join(workspace, "bun.lockb")) || existsSync(join(workspace, "bun.lock"));
   const args = hasLockfile ? ["install", "--frozen-lockfile"] : ["install"];
 
-  const r = spawnSync("bun", args, {
+  const r = spawnSync(process.execPath || "bun", args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: 60_000,
@@ -56,7 +56,7 @@ export interface TestRunResult {
 
 /** Run `bun test` in the workspace and capture combined output. */
 export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestRunResult {
-  const r = spawnSync("bun", ["test"], {
+  const r = spawnSync(process.execPath || "bun", ["test"], {
     cwd: workspace,
     encoding: "utf8",
     timeout: timeoutMs,

@@ -80,6 +80,29 @@ describe("GitTools.commit", () => {
     const log = Bun.file(LOG);
     expect(log).toBeTruthy();
   });
+
+  it("ignores agent-internal metadata folders like .agent and .projectos", () => {
+    writeFileSync(join(REPO, "new.txt"), "regular change");
+    mkdirSync(join(REPO, ".agent"), { recursive: true });
+    writeFileSync(join(REPO, ".agent/lessons.json"), "lessons");
+    mkdirSync(join(REPO, ".projectos"), { recursive: true });
+    writeFileSync(join(REPO, ".projectos/steering.jsonl"), "steering");
+
+    // Commit only metadata file
+    const metaResult = makeTools().commit([".agent/lessons.json"], "add lessons");
+    expect(metaResult.sha).toBe("0000000000000000000000000000000000000000");
+    expect(metaResult.message).toContain("agent-internal files ignored");
+
+    // Commit a mixed list of metadata and regular files
+    const mixedResult = makeTools().commit(["new.txt", ".projectos/steering.jsonl"], "add mixed");
+    expect(mixedResult.sha).toHaveLength(40);
+    expect(mixedResult.sha).not.toBe("0000000000000000000000000000000000000000");
+
+    // Verify only new.txt is committed, and .projectos/steering.jsonl is untracked
+    const status = makeTools().status();
+    expect(status).not.toContain("new.txt");
+    expect(status).toContain(".projectos/");
+  });
 });
 
 describe("GitTools.clone / branches / diffRange", () => {
