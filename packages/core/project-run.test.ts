@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { Database } from "bun:sqlite";
@@ -7,7 +8,7 @@ import { ProjectRun } from "./project-run";
 import type { ProjectRunConfig } from "./project-run";
 import type { CreateMessageFn, ContentBlock } from "./agent-runner";
 
-const TMP_BASE = "/tmp/projectos-run-test";
+const TMP_BASE = join(tmpdir(), "projectos-run-test");
 
 function makeWorkspace(label: string) {
   const dir = join(TMP_BASE, label);
@@ -18,6 +19,16 @@ function makeWorkspace(label: string) {
   spawnSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
   spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
   return dir;
+}
+
+let activeDbs: Database[] = [];
+function cleanActiveDbs() {
+  for (const db of activeDbs) {
+    try {
+      db.close();
+    } catch {}
+  }
+  activeDbs = [];
 }
 
 function makeDb(workspace: string) {
@@ -32,6 +43,7 @@ function makeDb(workspace: string) {
     status TEXT NOT NULL DEFAULT 'running',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`);
+  activeDbs.push(db);
   return db;
 }
 
@@ -76,7 +88,7 @@ describe("INTAKE state", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`intake-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("writes task.md and returns CLARIFY_DONE immediately", async () => {
     // INTAKE returns immediately; remaining states need scripted agent responses
@@ -106,7 +118,7 @@ describe("DESIGN → blueprint validation", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`design-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("escalates when agent doesn't produce blueprint files", async () => {
     // autoYes skips CLARIFY model call.
@@ -132,7 +144,7 @@ describe("TEST verdict parsing", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`test-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("returns TESTS_PASS when agent replies VERDICT: PASS", async () => {
     // Seed blueprint files so DESIGN passes validation
@@ -206,7 +218,7 @@ describe("loopBounds override", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`bounds-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("escalates after custom maxRepair instead of the default 3", async () => {
     const agentDir = join(workspace, ".agent");
@@ -246,7 +258,7 @@ describe("REVIEW verdict parsing", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`review-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("returns REVIEW_APPROVE with verdictProvided=true on APPROVE", async () => {
     const agentDir = join(workspace, ".agent");
@@ -292,7 +304,7 @@ describe("modelOverride", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`model-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("replaces fable-tier roles only — cheaper tiers keep their model", async () => {
     const seenModels = new Set<string>();
@@ -332,7 +344,7 @@ describe("work unit fallback", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`wu-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("falls back to a single work unit when implementation-plan.md is absent", async () => {
     // Plant all blueprint files EXCEPT implementation-plan.md
@@ -359,7 +371,7 @@ describe("systemPromptOverrides", () => {
   let workspace: string;
 
   beforeEach(() => { workspace = makeWorkspace(`sysprompt-${Date.now()}`); });
-  afterEach(() => rmSync(workspace, { recursive: true, force: true }));
+  afterEach(() => { cleanActiveDbs(); rmSync(workspace, { recursive: true, force: true }); });
 
   it("uses the override prompt for the targeted role only", async () => {
     const agentDir = join(workspace, ".agent");

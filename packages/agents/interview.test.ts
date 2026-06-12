@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, readFileSync, existsSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { InterviewSession } from "./interview";
 import { DEFAULT_QUESTIONS, criticalQuestions } from "./product-strategist";
 import type { InterviewQuestion } from "./interview";
 
-const TMP = "/tmp/projectos-interview-test";
+const TMP = join(tmpdir(), "projectos-interview-test");
 const INTERVIEW_FILE = join(TMP, ".agent/interview.md");
 
 const QUESTIONS: InterviewQuestion[] = [

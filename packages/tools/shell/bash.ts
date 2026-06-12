@@ -1,3 +1,4 @@
+import { existsSync } from "fs";
 import { spawnSync } from "child_process";
 import { logToolCall } from "../tool-logger";
 
@@ -31,7 +32,15 @@ export class BashTool {
     const start = Date.now();
     const env = scrubEnv(this.opts.extraEnv);
 
-    const proc = spawnSync("bash", ["-c", command], {
+    let shellPath = "bash";
+    if (process.platform === "win32") {
+      const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+      if (existsSync(gitBash)) {
+        shellPath = gitBash;
+      }
+    }
+
+    const proc = spawnSync(shellPath, ["-c", command], {
       cwd: this.opts.workspace,
       env,
       timeout: this.opts.timeoutMs ?? 30_000,

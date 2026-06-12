@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { BlueprintSession, BLUEPRINT_FILES } from "./architect";
 import { transition, makeContext } from "@projectos/core";
 
-const TMP = "/tmp/projectos-architect-test";
+const TMP = join(tmpdir(), "projectos-architect-test");
 const AGENT_DIR = join(TMP, ".agent");
 
 const SAMPLE_CONTENT = {

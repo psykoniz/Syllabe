@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { spawnSync } from "child_process";
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".agent", ".projectos"]);
 
@@ -199,3 +200,118 @@ export function buildRepoTree(workspace: string, opts: RepoContextOptions = {}):
     "```",
   ].join("\n");
 }
+
+// ─── Smart repo context (task-guided) ────────────────────────────────────────
+
+const STOP_WORDS = new Set([
+  "that", "this", "with", "from", "have", "will", "should", "create",
+  "make", "build", "want", "need", "like", "just", "using", "also",
+  "each", "file", "code", "project", "must", "some", "when", "then",
+]);
+
+/** Extract meaningful keywords from a task description for file search. */
+export function extractTaskKeywords(task: string): string[] {
+  return task
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w));
+}
+
+/** Grep the workspace for files containing task-relevant keywords. */
+export function findRelevantFiles(
+  workspace: string,
+  keywords: string[],
+  maxFiles = 20
+): string[] {
+  const files = new Set<string>();
+  for (const kw of keywords.slice(0, 5)) {
+    const r = spawnSync(
+      "grep",
+      ["-rl", "--include=*.ts", "--include=*.tsx", "--include=*.js",
+       "--include=*.json", "--include=*.md", kw, "."],
+      { cwd: workspace, encoding: "utf8", timeout: 5000 }
+    );
+    if (r.status === 0) {
+      for (const f of r.stdout.split("\n").filter(Boolean)) {
+        const clean = f.replace(/^\.\//, "");
+        if (!SKIP_DIRS.has(clean.split("/")[0])) {
+          files.add(clean);
+        }
+        if (files.size >= maxFiles) break;
+      }
+    }
+    if (files.size >= maxFiles) break;
+  }
+  return [...files];
+}
+
+/** Read the first N lines of files for concise prompt injection. */
+function readExcerpts(
+  workspace: string,
+  files: string[],
+  maxFiles = 5,
+  maxLines = 50
+): string {
+  const sections: string[] = [];
+  for (const file of files.slice(0, maxFiles)) {
+    try {
+      const content = readFileSync(join(workspace, file), "utf8");
+      const lines = content.split("\n").slice(0, maxLines);
+      const suffix = content.split("\n").length > maxLines ? "\n…(truncated)" : "";
+      sections.push(`#### ${file}\n\`\`\`\n${lines.join("\n")}${suffix}\n\`\`\``);
+    } catch { /* skip unreadable */ }
+  }
+  return sections.join("\n\n");
+}
+
+/** Smart repo context: compact tree + relevant file discovery + excerpts,
+ *  guided by task keywords. Produces a much more focused context than
+ *  buildRepoContext() for large repositories. */
+export function buildSmartRepoContext(
+  workspace: string,
+  task: string,
+  opts: RepoContextOptions = {}
+): string {
+  const keywords = extractTaskKeywords(task);
+
+  // 1. Compact tree (reduced depth to save tokens)
+  const tree = buildTree(workspace, opts.maxDepth ?? 2, opts.maxEntries ?? 100);
+
+  // 2. Find files matching task keywords
+  const relevantFiles = findRelevantFiles(workspace, keywords);
+
+  // 3. Read excerpts of the most relevant files
+  const excerpts = readExcerpts(workspace, relevantFiles);
+
+  const sections: string[] = [
+    "#### File tree" + (tree.truncated ? " (truncated)" : ""),
+    "```",
+    tree.lines.join("\n") || "(empty)",
+    "```",
+  ];
+
+  if (relevantFiles.length > 0) {
+    sections.push(
+      "",
+      `#### Files relevant to the task (${relevantFiles.length} matches)`,
+      relevantFiles.map((f) => `- ${f}`).join("\n"),
+    );
+  }
+
+  if (excerpts) {
+    sections.push("", "#### Key file excerpts", excerpts);
+  }
+
+  const conventions = detectConventions(workspace);
+  if (conventions.length > 0) {
+    sections.push("", "#### Detected conventions", ...conventions.map((c) => `- ${c}`));
+  }
+
+  const readme = readmeExcerpt(workspace, opts.readmeChars ?? 1000);
+  if (readme) {
+    sections.push("", "#### README excerpt", "```markdown", readme, "```");
+  }
+
+  return sections.join("\n");
+}
+

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { Reviewer, validateVerdict } from "./reviewer";
 import type { ReviewVerdict } from "./reviewer";
 import { transition, makeContext } from "@projectos/core";
 
-const TMP = "/tmp/projectos-reviewer-test";
+const TMP = join(tmpdir(), "projectos-reviewer-test");
 
 const APPROVED_VERDICT: ReviewVerdict = {
   approved: true,

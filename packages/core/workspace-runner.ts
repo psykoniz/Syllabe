@@ -1,4 +1,4 @@
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
@@ -254,3 +254,46 @@ export function buildRepairDiagnostic(
   for (const s of changedStats.slice(0, 30)) lines.push(`- ${s}`);
   return lines.join("\n");
 }
+
+/** Structured JSON diagnostic for REPAIR prompts — LLMs parse JSON
+ *  more reliably than markdown, especially for file:line targeting.
+ *  Includes a ~10-line code window around each failure for precise context. */
+export function buildStructuredDiagnostic(
+  failures: TestFailure[],
+  changedStats: string[],
+  workspace: string,
+): string {
+  const structured = failures.slice(0, 10).map((f) => {
+    const entry: Record<string, unknown> = {
+      file: f.file,
+      line: f.line ?? null,
+      testName: f.testName ?? null,
+      error: f.message ?? null,
+    };
+
+    // Include the ~10 lines around the failure for precise context
+    if (f.file && f.line) {
+      try {
+        const content = readFileSync(join(workspace, f.file), "utf8");
+        const allLines = content.split("\n");
+        const start = Math.max(0, f.line - 5);
+        const end = Math.min(allLines.length, f.line + 5);
+        entry.codeContext = allLines
+          .slice(start, end)
+          .map((l, i) => `${start + i + 1}: ${l}`)
+          .join("\n");
+      } catch { /* skip unreadable files */ }
+    }
+
+    return entry;
+  });
+
+  return JSON.stringify({
+    totalFailures: failures.length,
+    failures: structured,
+    changedFiles: changedStats.slice(0, 20),
+    instruction: "Fix ONLY the source files (not tests) to resolve these failures. " +
+      "Focus on the codeContext around each failure line.",
+  }, null, 2);
+}
+

@@ -145,3 +145,105 @@ function isNumberRecord(v: unknown): v is Record<string, number> {
   if (typeof v !== "object" || v === null) return false;
   return Object.values(v as object).every((x) => typeof x === "number");
 }
+
+// ─── V2: LLM-assisted optimizer ──────────────────────────────────────────────
+
+export interface CreateMessageFn {
+  (params: {
+    model: string;
+    max_tokens: number;
+    system?: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  }): Promise<{
+    content: Array<{ type: string; text?: string }>;
+  }>;
+}
+
+const OPTIMIZER_PROMPT = [
+  "You are a meta-agent that optimizes an AI coding agent harness.",
+  "You analyze failure patterns from past runs and propose configuration changes.",
+  "",
+  "Available configuration levers (CandidateConfig):",
+  "- systemPrompts: Record<role, prompt> — override system prompts for specific roles",
+  "  Roles: product-strategist, architect, implementer, test-engineer, reviewer, memory-curator",
+  "- modelRouting: Record<role, model> — override which model handles which role",
+  "  Available: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5",
+  "- stateBudgets: Record<state, maxTokens> — token budget per state",
+  "  States: INTAKE, CLARIFY, DESIGN, PLAN, IMPLEMENT, TEST, REPAIR, REVIEW, DOCUMENT, LEARN",
+  "- loopBounds: { maxRepair?: number, maxReview?: number }",
+  "",
+  "Reply with valid JSON matching CandidateConfig. Include a rationale field explaining why.",
+  "Never propose changes outside these 4 fields.",
+  "Keep the proposal minimal — target the root cause, do not change everything at once.",
+].join("\n");
+
+/** V2 optimizer: heuristics first (cheap), LLM fallback (expensive but smart).
+ *  The LLM call only fires when heuristics return {} (no known fix). */
+export class HarnessOptimizerV2 extends HarnessOptimizer {
+  constructor(private createMessage: CreateMessageFn) {
+    super();
+  }
+
+  /** Try heuristics first; fall back to an LLM-proposed config when the
+   *  static rules don't cover the failure pattern. */
+  async proposeLLM(
+    patterns: FailurePattern[],
+    rejectedConfigs: CandidateConfig[] = [],
+    traceExcerpts = "",
+  ): Promise<OptimizerProposal> {
+    // Cheap path: heuristic rules
+    const heuristic = this.propose(patterns, rejectedConfigs);
+    if (Object.keys(heuristic.change).length > 0) return heuristic;
+
+    // Heuristics returned {} — the pattern is unknown; ask the LLM
+    if (patterns.length === 0) return heuristic;
+
+    const model = process.env.PROJECTOS_MODEL_OVERRIDE ?? "claude-opus-4-8";
+
+    try {
+      const response = await this.createMessage({
+        model,
+        max_tokens: 1024,
+        system: OPTIMIZER_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: JSON.stringify({
+              failurePatterns: patterns.slice(0, 10),
+              rejectedConfigs,
+              traceExcerpts: traceExcerpts.slice(0, 3000),
+            }),
+          },
+        ],
+      });
+
+      const text = response.content
+        .filter((b) => b.type === "text" && b.text)
+        .map((b) => b.text!)
+        .join("\n");
+
+      // Extract JSON from the response (may be wrapped in markdown fences)
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+        const { rationale, ...change } = parsed;
+        if (validateCandidateConfig(change)) {
+          return {
+            rationale: String(rationale ?? "LLM-proposed change"),
+            change: change as CandidateConfig,
+            targetPatterns: patterns.map((p) => p.reason),
+          };
+        }
+      }
+    } catch {
+      // LLM call failed — fall through
+    }
+
+    return {
+      rationale: "LLM proposal failed validation or heuristics exhausted; escalate to human.",
+      change: {},
+      targetPatterns: patterns.map((p) => p.reason),
+    };
+  }
+}
+

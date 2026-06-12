@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { FsTools, findNormalizedMatch } from "./fs-tools";
 
-const TMP = "/tmp/projectos-fs-test";
+const TMP = join(tmpdir(), "projectos-fs-test");
 const LOG = join(TMP, "tool-calls.jsonl");
 
 function makeTools() {
@@ -19,7 +20,7 @@ afterEach(() => rmSync(TMP, { recursive: true, force: true }));
 describe("read", () => {
   it("returns file content", () => {
     const fp = join(TMP, "hello.txt");
-    Bun.write(fp, "world");
+    writeFileSync(fp, "world");
     expect(makeTools().read(fp)).toBe("world");
   });
 
@@ -29,7 +30,7 @@ describe("read", () => {
 
   it("logs the call", () => {
     const fp = join(TMP, "a.txt");
-    Bun.write(fp, "x");
+    writeFileSync(fp, "x");
     makeTools().read(fp);
     const log = readFileSync(LOG, "utf8").trim();
     expect(JSON.parse(log).tool).toBe("read");
@@ -88,9 +89,9 @@ describe("edit", () => {
 describe("glob", () => {
   it("finds files matching pattern", () => {
     mkdirSync(join(TMP, "src"), { recursive: true });
-    Bun.write(join(TMP, "src/a.ts"), "");
-    Bun.write(join(TMP, "src/b.ts"), "");
-    Bun.write(join(TMP, "src/c.js"), "");
+    writeFileSync(join(TMP, "src/a.ts"), "");
+    writeFileSync(join(TMP, "src/b.ts"), "");
+    writeFileSync(join(TMP, "src/c.js"), "");
     const results = makeTools().glob("src/*.ts", TMP);
     expect(results.files).toHaveLength(2);
     expect(results.files.every((r) => r.endsWith(".ts"))).toBe(true);
@@ -99,8 +100,8 @@ describe("glob", () => {
 
   it("finds files recursively with **", () => {
     mkdirSync(join(TMP, "a/b"), { recursive: true });
-    Bun.write(join(TMP, "a/x.ts"), "");
-    Bun.write(join(TMP, "a/b/y.ts"), "");
+    writeFileSync(join(TMP, "a/x.ts"), "");
+    writeFileSync(join(TMP, "a/b/y.ts"), "");
     const results = makeTools().glob("**/*.ts", TMP);
     expect(results.files.length).toBeGreaterThanOrEqual(2);
   });
@@ -124,7 +125,7 @@ describe("grep", () => {
   });
 
   it("skips missing files silently", () => {
-    const results = makeTools().grep("x", ["/tmp/does-not-exist-ever.txt"]);
+    const results = makeTools().grep("x", [join(tmpdir(), "does-not-exist-ever.txt")]);
     expect(results.matches).toHaveLength(0);
   });
 });
@@ -184,7 +185,7 @@ describe("glob/grep caps", () => {
   it("glob caps results and flags truncation", () => {
     const dir = join(TMP, "many");
     mkdirSync(dir, { recursive: true });
-    for (let i = 0; i < 12; i++) Bun.write(join(dir, `f${String(i).padStart(2, "0")}.txt`), "");
+    for (let i = 0; i < 12; i++) writeFileSync(join(dir, `f${String(i).padStart(2, "0")}.txt`), "");
     const r = makeTools().glob("many/*.txt", TMP, { limit: 5 });
     expect(r.files).toHaveLength(5);
     expect(r.truncated).toBe(true);

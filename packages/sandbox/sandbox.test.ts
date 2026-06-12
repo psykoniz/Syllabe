@@ -1,7 +1,14 @@
 import { describe, it, expect } from "bun:test";
+import { tmpdir } from "os";
+import { join } from "path";
 import { DockerSandbox } from "./src/docker-sandbox";
 import type { ExecFn } from "./src/docker-sandbox";
 import { SandboxedBash } from "./src/sandboxed-bash";
+
+const TEST_WORKSPACE = join(tmpdir(), "test-workspace");
+const TEST_LOG = join(tmpdir(), "test-tool-calls.jsonl");
+const WORKSPACE = join(tmpdir(), "ws");
+const LOG = join(tmpdir(), "log.jsonl");
 
 function fakeExec(calls: Array<{ cmd: string; args: string[] }>): ExecFn {
   return (cmd, args) => {
@@ -21,8 +28,8 @@ describe("DockerSandbox", () => {
   it("runs commands through docker run with stdout returned", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/test-workspace",
-      logPath: "/tmp/test-tool-calls.jsonl",
+      workspace: TEST_WORKSPACE,
+      logPath: TEST_LOG,
       exec: fakeExec(calls),
     });
     const result = sandbox.run("echo hello");
@@ -35,8 +42,8 @@ describe("DockerSandbox", () => {
   it("uses --network none, --read-only, and no-new-privileges by default", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       exec: fakeExec(calls),
     });
     sandbox.run("ls");
@@ -50,21 +57,21 @@ describe("DockerSandbox", () => {
   it("mounts the workspace at /workspace and locks cwd there", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       exec: fakeExec(calls),
     });
     sandbox.run("ls");
     const args = calls[0].args;
-    expect(args[args.indexOf("--volume") + 1]).toBe("/tmp/ws:/workspace:rw");
+    expect(args[args.indexOf("--volume") + 1]).toBe(`${WORKSPACE}:/workspace:rw`);
     expect(args[args.indexOf("--workdir") + 1]).toBe("/workspace");
   });
 
   it("passes only PATH into the container env", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       exec: fakeExec(calls),
     });
     sandbox.run("env");
@@ -78,8 +85,8 @@ describe("DockerSandbox", () => {
   it("caps memory and disables swap", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       memoryMb: 256,
       exec: fakeExec(calls),
     });
@@ -91,8 +98,8 @@ describe("DockerSandbox", () => {
 
   it("reports non-zero exit codes", () => {
     const sandbox = new DockerSandbox({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       exec: () => ({ status: 2, stdout: "", stderr: "boom", signal: null }),
     });
     const result = sandbox.run("false");
@@ -105,8 +112,8 @@ describe("SandboxedBash", () => {
   it("implements the BashRunner interface (run + getEnv)", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sb = new SandboxedBash({
-      workspace: "/tmp/test-workspace",
-      logPath: "/tmp/test-tool-calls.jsonl",
+      workspace: TEST_WORKSPACE,
+      logPath: TEST_LOG,
       exec: fakeExec(calls),
     });
     const result = sb.run("echo hello");
@@ -116,8 +123,8 @@ describe("SandboxedBash", () => {
 
   it("getEnv exposes only PATH — no host secrets", () => {
     const sb = new SandboxedBash({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
     });
     const env = sb.getEnv();
     expect(Object.keys(env)).toEqual(["PATH"]);
@@ -127,8 +134,8 @@ describe("SandboxedBash", () => {
   it("forwards sandbox options to docker args", () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const sb = new SandboxedBash({
-      workspace: "/tmp/ws",
-      logPath: "/tmp/log.jsonl",
+      workspace: WORKSPACE,
+      logPath: LOG,
       sandboxImage: "python:3.12-alpine",
       sandboxNetwork: "bridge",
       exec: fakeExec(calls),

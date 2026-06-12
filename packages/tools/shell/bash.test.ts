@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { BashTool } from "./bash";
 
-const TMP = "/tmp/projectos-bash-test";
+const TMP = join(tmpdir(), "projectos-bash-test");
 const LOG = join(TMP, "tool-calls.jsonl");
 
 function makeTool(extra?: Record<string, string>) {

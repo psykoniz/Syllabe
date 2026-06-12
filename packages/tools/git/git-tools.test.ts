@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { GitTools } from "./git-tools";
 
-const TMP = "/tmp/projectos-git-test";
+const TMP = join(tmpdir(), "projectos-git-test");
 const LOG = join(TMP, "tool-calls.jsonl");
 const REPO = join(TMP, "repo");
 

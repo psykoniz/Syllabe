@@ -21,7 +21,7 @@ describe("createExploreDispatcher", () => {
     const ws = mkdtempSync(join(tmpdir(), "exp-"));
     try {
       const d = createExploreDispatcher({
-        createMessage: async () => ({ content: [], stop_reason: "end_turn" }) as ChatResponse,
+        createMessage: async () => ({ content: [], stop_reason: "end_turn", usage: { input_tokens: 0, output_tokens: 0 } }) as ChatResponse,
         toolContext: makeCtx(ws),
       });
       expect(await d("bash", {})).toBeUndefined();

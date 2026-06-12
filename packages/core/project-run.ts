@@ -18,11 +18,11 @@ import type { ApprovalHandler } from "@projectos/policy";
 import { resolveModel } from "@projectos/router";
 import type { Role } from "@projectos/router";
 import { InterviewSession, DEFAULT_QUESTIONS, BlueprintSession } from "@projectos/agents";
-import { UserMemory, LessonCurator, GlobalMemory, projectKeyFor } from "@projectos/memory";
+import { UserMemory, LessonCurator, GlobalMemory, projectKeyFor, SkillStore } from "@projectos/memory";
 import { readPendingSteering, markConsumed } from "./steering";
-import { EXPLORE_TOOL, createExploreDispatcher, chainDispatchers } from "./explorer-tool";
+import { EXPLORE_TOOL, createExploreDispatcher, chainDispatchers, ExtraDispatcher } from "./explorer-tool";
 import type { Lesson } from "@projectos/memory";
-import { buildRepoContext, buildRepoTree } from "./repo-context";
+import { buildRepoContext, buildRepoTree, buildSmartRepoContext } from "./repo-context";
 import { ensureRunMetaTable, setRunMeta } from "./session-db";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, EffortLevel } from "./agent-runner";
@@ -34,6 +34,7 @@ import {
   failuresOutsideScope,
   changedFileStats,
   buildRepairDiagnostic,
+  buildStructuredDiagnostic,
 } from "./workspace-runner";
 import type { TestFailure } from "./workspace-runner";
 import { spawnSync } from "child_process";
@@ -193,7 +194,7 @@ export class ProjectRun implements AgentHandler {
       repoPath: this.cfg.workspace,
     }).createBranch(workBranch);
 
-    this.repoContext = buildRepoContext(this.cfg.workspace);
+    this.repoContext = buildSmartRepoContext(this.cfg.workspace, this.cfg.task);
     this.repoTree = buildRepoTree(this.cfg.workspace);
   }
 
@@ -498,11 +499,13 @@ export class ProjectRun implements AgentHandler {
   private async handleRepair(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
 
-    // Fix 3: targeted diagnostic — file:line, test name and one-line error
-    // for each failure plus the run's diff stats, instead of the full dump.
-    const diagnostic = buildRepairDiagnostic(
+    // Fix 3+: structured JSON diagnostic — file:line, test name, error message
+    // and surrounding code context for each failure, plus the run's diff stats.
+    // LLMs handle structured JSON more reliably than free-form markdown.
+    const diagnostic = buildStructuredDiagnostic(
       this.lastTestFailures,
-      changedFileStats(this.cfg.workspace)
+      changedFileStats(this.cfg.workspace),
+      this.cfg.workspace,
     );
 
     const prompt = buildStatePrompt("REPAIR", this.cfg.task, {
@@ -510,10 +513,10 @@ export class ProjectRun implements AgentHandler {
       instructions: [
         `Work unit: **${wu?.description ?? "current"}** — repair attempt ${ctx.repairCount}`,
         "",
-        "The test failures and your changed files are listed in the context above.",
-        "Focus ONLY on those failures — do not touch unrelated files.",
-        "Fix the source code (not the tests) to make them pass.",
-        "Confirm with a `bun test` run on the affected files.",
+        "The test failures are provided as structured JSON in the context above.",
+        "Each failure includes the file, line, error message, and surrounding code.",
+        "Fix ONLY the source code files listed in changedFiles — never modify test files.",
+        "After fixing, run `bun test` on the affected files to confirm.",
       ],
     });
 
@@ -584,6 +587,54 @@ export class ProjectRun implements AgentHandler {
     } catch {
       // global memory is best-effort
     }
+
+    // Persist skills from successful runs — extract the workflow pattern
+    // (architecture + plan) so future runs can reuse proven approaches.
+    try {
+      const planPath = join(this.agentDir, "implementation-plan.md");
+      const archPath = join(this.agentDir, "architecture.md");
+      if (existsSync(planPath)) {
+        const plan = readFileSync(planPath, "utf8");
+        const arch = existsSync(archPath) ? readFileSync(archPath, "utf8") : "";
+        const tags = this.cfg.task
+          .toLowerCase()
+          .split(/\W+/)
+          .filter((w) => w.length > 3)
+          .slice(0, 5);
+
+        // Local skill store
+        const localSkills = new SkillStore(join(this.agentDir, "skills.json"));
+        localSkills.add(
+          `run-${this.cfg.runId.slice(0, 8)}`,
+          `Workflow for: ${this.cfg.task.slice(0, 100)}`,
+          [
+            "## Architecture pattern",
+            arch.slice(0, 500),
+            "",
+            "## Implementation plan",
+            plan.slice(0, 500),
+          ].join("\n"),
+          tags,
+        );
+
+        // Global skill store (survives fresh clones)
+        const home = process.env.HOME ?? "~";
+        const globalSkillPath = join(
+          home, ".projectos", "skills",
+          projectKeyFor(this.cfg.workspace), "skills.json"
+        );
+        const globalSkills = new SkillStore(globalSkillPath);
+        globalSkills.add(
+          `run-${this.cfg.runId.slice(0, 8)}`,
+          `Workflow for: ${this.cfg.task.slice(0, 100)}`,
+          plan.slice(0, 500),
+          tags,
+        );
+      }
+    } catch {
+      // skill extraction is best-effort
+    }
+
     return { type: "LEARN_DONE" };
   }
 
@@ -612,8 +663,8 @@ export class ProjectRun implements AgentHandler {
   /** Roles whose prompts benefit from past lessons and preferences. */
   private static MEMORY_ROLES = new Set<Role>(["architect", "implementer"]);
 
-  /** Hermes-style memory block: user prefs + global/project lessons matched
-   *  against the task. Built once per run, capped at ~2k chars. */
+  /** Hermes-style memory block: user prefs + global/project lessons + skills
+   *  matched against the task. Built once per run, capped at ~3k chars. */
   private buildMemoryBlock(): string {
     if (this.memoryBlock !== null) return this.memoryBlock;
     try {
@@ -621,15 +672,21 @@ export class ProjectRun implements AgentHandler {
       const userMem = new UserMemory(join(home, ".projectos", "preferences.json"));
       const globalMem = new GlobalMemory({ project: projectKeyFor(this.cfg.workspace) });
       const localLessons = new LessonCurator(join(this.agentDir, "lessons.json"));
+      const globalSkillPath = join(
+        home, ".projectos", "skills",
+        projectKeyFor(this.cfg.workspace), "skills.json"
+      );
+      const skillStore = new SkillStore(globalSkillPath);
 
       const parts = [
         userMem.toContextBlock(),
         globalMem.toContextBlock(this.cfg.task),
         localLessons.toContextBlock(this.cfg.task),
+        skillStore.toContextBlock(),
       ].filter(Boolean);
 
       this.memoryBlock = parts.length > 0
-        ? ("### Memory\n" + parts.join("\n")).slice(0, 2000)
+        ? ("### Memory\n" + parts.join("\n")).slice(0, 3000)
         : "";
     } catch {
       this.memoryBlock = "";
@@ -674,7 +731,7 @@ export class ProjectRun implements AgentHandler {
       : undefined;
 
     // Architect and implementer can fan out read-only research sub-agents
-    let exploreDispatcher;
+    let exploreDispatcher: ExtraDispatcher | undefined;
     if (ProjectRun.MEMORY_ROLES.has(role)) {
       extraTools.push(EXPLORE_TOOL);
       exploreDispatcher = createExploreDispatcher({
@@ -684,7 +741,10 @@ export class ProjectRun implements AgentHandler {
     }
     const extraDispatcher =
       playwrightDispatcher || exploreDispatcher
-        ? chainDispatchers(playwrightDispatcher, exploreDispatcher)
+        ? async (name: string, input: Record<string, unknown>) => {
+            const res = await chainDispatchers(playwrightDispatcher, exploreDispatcher)(name, input);
+            return res ?? null;
+          }
         : undefined;
 
     const memory = ProjectRun.MEMORY_ROLES.has(role) ? this.buildMemoryBlock() : "";

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { AdrStore } from "./adr-store";
 import { UserMemory } from "./user-memory";
@@ -7,7 +8,7 @@ import { LessonCurator } from "./lesson-curator";
 import { SkillStore } from "./skill-store";
 import { ProjectMemory, assembleContext } from "./project-memory";
 
-const TMP = "/tmp/projectos-memory-test";
+const TMP = join(tmpdir(), "projectos-memory-test");
 
 beforeEach(() => mkdirSync(TMP, { recursive: true }));
 afterEach(() => rmSync(TMP, { recursive: true, force: true }));

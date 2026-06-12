@@ -34,7 +34,9 @@ interface OpenAiMessage {
 
 interface OpenAiRequest {
   model: string;
-  max_tokens: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  reasoning_effort?: "low" | "medium" | "high";
   messages: OpenAiMessage[];
   tools?: Array<{
     type: "function";
@@ -104,9 +106,14 @@ export function toOpenAiRequest(params: CreateMessageParams): OpenAiRequest {
     if (text) messages.push({ role: "user", content: text });
   }
 
-  return {
+  const isReasoning =
+    params.model.includes("gpt-5") ||
+    params.model.includes("o1") ||
+    params.model.includes("o3") ||
+    params.model.includes("codex");
+
+  const req: OpenAiRequest = {
     model: params.model,
-    max_tokens: params.max_tokens,
     messages,
     ...(params.tools && params.tools.length > 0
       ? {
@@ -120,8 +127,19 @@ export function toOpenAiRequest(params: CreateMessageParams): OpenAiRequest {
           })),
         }
       : {}),
-    // thinking / output_config / cache_control are Anthropic-specific — dropped.
   };
+
+  if (isReasoning) {
+    req.max_completion_tokens = params.max_tokens;
+    if (params.output_config?.effort) {
+      const effort = params.output_config.effort;
+      req.reasoning_effort = effort === "max" ? "high" : effort;
+    }
+  } else {
+    req.max_tokens = params.max_tokens;
+  }
+
+  return req;
 }
 
 /** /v1/chat/completions response → /v1/messages shape */

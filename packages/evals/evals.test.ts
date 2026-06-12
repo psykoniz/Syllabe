@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { BenchmarkRunner } from "./benchmark-runner";
 import { aggregateScores, formatScoreTable } from "./scorers";
 import { BaselineStore } from "./baseline";
 import type { BenchmarkTask, TaskScore } from "./index";
 
-const TMP = "/tmp/projectos-evals-test";
+const TMP = join(tmpdir(), "projectos-evals-test");
 
 beforeEach(() => mkdirSync(TMP, { recursive: true }));
 afterEach(() => rmSync(TMP, { recursive: true, force: true }));
