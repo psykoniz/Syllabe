@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { runAgentLoop } from "./agent-loop";
 import { makeContext } from "./state-machine";
@@ -135,6 +135,10 @@ export class ProjectRun implements AgentHandler {
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
     mkdirSync(this.agentDir, { recursive: true });
+    // Pre-create the ADR directory so the architect never needs a `mkdir` shell
+    // call (heredoc/mkdir via bash fails on some Windows shells and sends the
+    // agent into a debugging spiral instead of writing the blueprints).
+    mkdirSync(join(this.agentDir, "decisions"), { recursive: true });
 
     const logPath = join(cfg.workspace, ".projectos", "tool-calls.jsonl");
     let bashTool;
@@ -329,7 +333,34 @@ export class ProjectRun implements AgentHandler {
 
     await this.callAgent("architect", prompt);
 
-    const { valid, missing } = bp.validate(this.agentDir);
+    let { valid, missing } = bp.validate(this.agentDir);
+
+    // The architect occasionally writes blueprints via `bash` heredoc instead
+    // of write_file; on some shells that fails and leaves files missing/empty.
+    // Give it one corrective retry naming the exact gaps before escalating —
+    // an empty design phase otherwise yields an empty patch with no recovery.
+    if (!valid) {
+      // Remove empty leftovers so write_file (which refuses to overwrite) succeeds.
+      for (const f of missing) {
+        const p = join(this.agentDir, f);
+        if (existsSync(p)) rmSync(p, { force: true });
+      }
+      const retryPrompt = buildStatePrompt("DESIGN", this.cfg.task, {
+        context: [interviewContent, this.framedRepoContext()].filter(Boolean).join("\n\n"),
+        instructions: [
+          "Your previous attempt left required blueprint files missing or empty.",
+          `Missing or empty: ${missing.join(", ")}.`,
+          "",
+          "Write ONLY the missing files now. For each, call the write_file tool with the",
+          "exact path and non-empty content. Do NOT use bash, cat, heredoc, or mkdir —",
+          "those fail on some shells. write_file creates parent directories itself.",
+          ...missing.map((f) => `  ${this.agentDir}/${f}`),
+        ],
+      });
+      await this.callAgent("architect", retryPrompt);
+      ({ valid, missing } = bp.validate(this.agentDir));
+    }
+
     return {
       type: "PLAN_DONE",
       workUnits: valid ? await this.extractWorkUnits() : [],

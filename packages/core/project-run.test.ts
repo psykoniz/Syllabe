@@ -136,6 +136,36 @@ describe("DESIGN → blueprint validation", () => {
       expect(result.finalContext.escalationReason).toBeTruthy();
     }
   });
+
+  it("retries the architect once and recovers when the first attempt writes no blueprints", async () => {
+    const agentDir = join(workspace, ".agent");
+    let designAttempts = 0;
+
+    // First DESIGN attempt writes nothing (simulating a failed bash heredoc);
+    // the corrective retry prompt makes it write all 4 blueprints via write_file.
+    const createMessage: CreateMessageFn = async (params) => {
+      const text = JSON.stringify(params);
+      if (text.includes("previous attempt left required blueprint")) {
+        for (const f of ["product.md", "architecture.md", "implementation-plan.md", "test-plan.md"]) {
+          writeFileSync(join(agentDir, f), `# ${f}\nnon-empty content`);
+        }
+        return { content: [{ type: "text", text: "blueprints written" }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } };
+      }
+      if (text.includes("extract an ordered list of work units")) {
+        return { content: [{ type: "text", text: '[{"id":"wu-1","description":"main entrypoint"}]' }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } };
+      }
+      if (text.includes("Generate 4 blueprint files")) designAttempts++;
+      return { content: [{ type: "text", text: "done" }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } };
+    };
+
+    const run = makeRun(workspace, createMessage);
+    const result = await run.run();
+
+    // The retry must have written the blueprints and cleared the design gate.
+    expect(designAttempts).toBe(1); // only the initial attempt carries that prompt
+    expect(existsSync(join(agentDir, "product.md"))).toBe(true);
+    expect(result.finalContext.escalationReason ?? "").not.toContain("blueprint incomplete");
+  });
 });
 
 // ─── TEST verdict parsing ──────────────────────────────────────────────────
