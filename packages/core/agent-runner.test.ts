@@ -491,6 +491,35 @@ describe("runAgent — resilience", () => {
     rmSync(TMP, { recursive: true, force: true });
   });
 
+  it("warns the model after a tool call fails identically 3 times", async () => {
+    const ctx = makeFakeCtx();
+    const seenResults: string[] = [];
+    // Always returns the same failing bash call; deny it so it always errors.
+    const create: CreateMessageFn = async (params) => {
+      const last = params.messages[params.messages.length - 1];
+      if (Array.isArray(last.content)) {
+        for (const b of last.content) {
+          if (b.type === "tool_result") seenResults.push(b.content);
+        }
+      }
+      return {
+        content: [{ type: "tool_use", id: "t", name: "bash", input: { command: "broken" } }],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    await runAgent([{ role: "user", content: "go" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+      maxIterations: 5,
+      approval: autoDeny,
+    });
+    // by the 3rd identical failure the loop-guard nudge is appended
+    expect(seenResults.some((c) => c.includes("loop guard"))).toBe(true);
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
   it("never throws out of tool dispatch — surfaces an error tool_result instead", async () => {
     const ctx = makeFakeCtx();
     let calls = 0;

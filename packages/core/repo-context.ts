@@ -4,6 +4,19 @@ import { spawnSync } from "child_process";
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".agent", ".projectos"]);
 
+/** Source file extensions searched by task-guided file discovery. Kept
+ *  language-agnostic on purpose: SWE-bench (and most real repos we run on) are
+ *  Python, Go, Rust, Java, … — restricting to JS/TS made the relevant file
+ *  invisible to the agent on every non-JS repo. */
+const SOURCE_EXTENSIONS = [
+  "ts", "tsx", "js", "jsx", "mjs", "cjs",
+  "py", "go", "rs", "java", "kt", "scala",
+  "rb", "php", "c", "h", "cc", "cpp", "hpp", "cs", "swift",
+  "json", "toml", "cfg", "ini", "md", "rst",
+] as const;
+
+const GREP_INCLUDES = SOURCE_EXTENSIONS.map((e) => `--include=*.${e}`);
+
 export interface RepoContextOptions {
   /** Maximum directory depth for the file tree (default 3) */
   maxDepth?: number;
@@ -227,8 +240,7 @@ export function findRelevantFiles(
   for (const kw of keywords.slice(0, 5)) {
     const r = spawnSync(
       "grep",
-      ["-rl", "--include=*.ts", "--include=*.tsx", "--include=*.js",
-       "--include=*.json", "--include=*.md",
+      ["-rl", ...GREP_INCLUDES,
        ...[...SKIP_DIRS].map((d) => `--exclude-dir=${d}`),
        "--fixed-strings", kw, "."],
       { cwd: workspace, encoding: "utf8", timeout: 5000 }
@@ -251,8 +263,8 @@ export function findRelevantFiles(
 function readExcerpts(
   workspace: string,
   files: string[],
-  maxFiles = 5,
-  maxLines = 50
+  maxFiles = 10,
+  maxLines = 120
 ): string {
   const sections: string[] = [];
   for (const file of files.slice(0, maxFiles)) {

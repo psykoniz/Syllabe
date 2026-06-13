@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { redactGitUrl, buildRepoContext, buildRepoTree } from "./repo-context";
+import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles } from "./repo-context";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -85,6 +85,27 @@ describe("buildRepoContext", () => {
     expect(ctx).toContain("Monorepo workspaces: pkgs/*");
     expect(ctx).toContain("TypeScript project");
     expect(ctx).toContain("*.test.* files colocated with sources");
+  });
+});
+
+describe("findRelevantFiles", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "relevant-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it("finds Python source files matching a keyword (was JS/TS-only)", () => {
+    mkdirSync(join(dir, "astropy", "modeling"), { recursive: true });
+    writeFileSync(join(dir, "astropy", "modeling", "separable.py"), "def separability_matrix():\n    pass\n");
+    const files = findRelevantFiles(dir, ["separability"]);
+    expect(files).toContain("astropy/modeling/separable.py");
+  });
+
+  it("finds Go and Rust sources too", () => {
+    writeFileSync(join(dir, "main.go"), "package main // widget");
+    writeFileSync(join(dir, "lib.rs"), "// widget impl");
+    const files = findRelevantFiles(dir, ["widget"]);
+    expect(files).toContain("main.go");
+    expect(files).toContain("lib.rs");
   });
 });
 

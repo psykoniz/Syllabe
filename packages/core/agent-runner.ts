@@ -442,6 +442,10 @@ export async function runAgent(
 ): Promise<AgentRunResult> {
   const messages: MessageParam[] = [...initialMessages];
   const maxIterations = opts.maxIterations ?? 50;
+  // Track consecutive identical failing tool calls so a model that keeps
+  // retrying the same broken command (the astropy-14182 298k-token spiral)
+  // is told to change approach instead of looping until budget exhaustion.
+  const failureCounts = new Map<string, number>();
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
@@ -546,7 +550,22 @@ export async function runAgent(
 
     const results: ToolResultBlock[] = [];
     for (const block of toolUses) {
-      results.push(await executeToolUse(block, opts));
+      const result = await executeToolUse(block, opts);
+      const sig = `${block.name}:${JSON.stringify(block.input)}`;
+      if (result.is_error) {
+        const n = (failureCounts.get(sig) ?? 0) + 1;
+        failureCounts.set(sig, n);
+        // Third identical failure in a row → stop the model from looping.
+        if (n >= 3) {
+          result.content +=
+            `\n\n[loop guard: this exact ${block.name} call has now failed ${n} times. ` +
+            `Do NOT retry it unchanged — diagnose the root cause from the error above and ` +
+            `try a fundamentally different approach, or move on.]`;
+        }
+      } else {
+        failureCounts.delete(sig); // recovered — reset the counter
+      }
+      results.push(result);
     }
     messages.push({ role: "user", content: results });
   }
