@@ -93,16 +93,16 @@ const EXISTING_REPO_INSTRUCTION =
   "This is an existing repository — locate the right files with the file tree above and " +
   "modify in place; run the project's own test command.";
 
-/** Reasoning effort per role: high only where deep reflection pays off (design, review, clarify),
- *  and low for simple execution, testing, memory-curating, and harness optimizing. */
+/** Reasoning effort per role: every role thinks at high effort. Patch quality on
+ *  real repos matters more than token cost, so we never downgrade reasoning. */
 const ROLE_EFFORT: Record<Role, EffortLevel> = {
   "architect":          "high",
   "reviewer":           "high",
   "product-strategist": "high",
-  "implementer":        "low",
-  "test-engineer":      "low",
-  "memory-curator":     "low",
-  "harness-optimizer":  "low",
+  "implementer":        "high",
+  "test-engineer":      "high",
+  "memory-curator":     "high",
+  "harness-optimizer":  "high",
 };
 
 /** State → role mapping */

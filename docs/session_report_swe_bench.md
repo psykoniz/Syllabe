@@ -73,24 +73,20 @@ Les modèles de raisonnement comme la série `gpt-5.x` facturent non seulement l
 
 Dans l'implémentation initiale, **tous les appels de l'agent** se voyaient attribuer un niveau de raisonnement élevé (`thinking: { type: "adaptive" }` et `effort: "high"`), et ce même pour des tâches triviales (comme lire un fichier, lister un dossier ou vérifier un statut git). Ce sur-cadencement inutile sur des dizaines d'étapes a rapidement consommé le budget de l'API OpenAI.
 
-### Optimisation : Gating Adaptatif des Efforts de Raisonnement
-Pour reproduire le comportement optimisé des modèles Anthropic, nous avons modifié la distribution de l'effort selon le rôle opérationnel de l'agent.
+### Décision finale : Thinking sur toutes les tâches (Effort `high` partout)
+Un premier essai de gating (effort `low` sur les rôles d'exécution) avait été tenté pour
+réduire le coût. Il a été abandonné : sur de vrais dépôts, c'est l'`implementer` qui produit
+le patch noté par le harness Docker, et baisser son effort optimise le coût exactement là où
+la qualité compte le plus. La décision retenue est donc **le raisonnement à effort `high` pour
+tous les rôles** — la qualité du patch prime sur le coût en tokens.
 
-1. **Rôles Décisionnels (Effort `high`)** :
-   Le raisonnement approfondi est maintenu uniquement pour les étapes stratégiques et critiques :
-   * `architect` : Conception des blueprints et du plan d'implémentation.
-   * `reviewer` : Évaluation finale de la qualité et validation du code produit.
-   * `product-strategist` : Cadrage du besoin et clarification des prérequis.
+| Rôle | Effort |
+| :--- | :--- |
+| `architect`, `reviewer`, `product-strategist` | `high` |
+| `implementer`, `test-engineer`, `memory-curator`, `harness-optimizer` | `high` |
+| Sous-agents d'exploration (`explore`) | `high` |
 
-2. **Rôles d'Exécution & Tâches Simples (Effort `low`)** :
-   L'effort de raisonnement est réduit au minimum pour économiser les tokens sur les phases mécaniques d'exploration et d'exécution :
-   * `implementer` : Écriture du code source et réparation de bugs simples.
-   * `test-engineer` : Écriture et lancement des tests unitaires.
-   * `memory-curator` : Rédaction des leçons apprises en fin d'exécution.
-   * `harness-optimizer` : Optimisations système.
-   * **Sous-agents d'exploration (`explore`)** : Configurés sur un effort `low` pour le parcours préliminaire de la base de code.
-
-Cette modification a été validée via les tests unitaires globaux du projet qui sont tous passés avec succès (**125 tests validés**).
+Cette configuration est validée par la suite de tests globale (**125 tests passés**).
 
 ---
 
