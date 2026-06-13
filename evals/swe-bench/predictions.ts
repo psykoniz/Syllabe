@@ -26,6 +26,19 @@ export const TEST_FILE_PATTERNS: RegExp[] = [
   /(^|\/)conftest\.py$/,   // pytest conftest
 ];
 
+/** Agent-internal / build-artifact path patterns. These are metadata and run
+ *  byproducts (never part of the repo under test) and must never leak into the
+ *  model patch — they would dirty the diff and can break `git apply`. */
+export const INTERNAL_FILE_PATTERNS: RegExp[] = [
+  /(^|\/)\.agent\//,       // ProjectOS planning/state docs
+  /(^|\/)\.projectos\//,   // run db, traces, tool-calls
+  /(^|\/)bun\.lockb?$/,    // bun lockfile from stray installs
+  /(^|\/)node_modules\//,  // dependency installs
+  /(^|\/)__pycache__\//,   // python bytecode cache
+  /\.pyc$/,                // compiled python
+  /\.log$/,                // build_ext.log, pytest.log, etc.
+];
+
 /** Split a unified diff into per-file sections, keyed by the b/ (new) path. */
 export function splitDiffByFile(diff: string): Array<{ path: string; section: string }> {
   if (!diff.trim()) return [];
@@ -41,6 +54,16 @@ export function splitDiffByFile(diff: string): Array<{ path: string; section: st
 export function stripTestChanges(diff: string): string {
   return splitDiffByFile(diff)
     .filter(({ path }) => !TEST_FILE_PATTERNS.some((re) => re.test(path)))
+    .map((s) => s.section)
+    .join("");
+}
+
+/** Remove both test-file sections and agent-internal/build-artifact sections,
+ *  leaving only genuine source changes for the official harness. */
+export function stripNonSourceChanges(diff: string): string {
+  const drop = [...TEST_FILE_PATTERNS, ...INTERNAL_FILE_PATTERNS];
+  return splitDiffByFile(diff)
+    .filter(({ path }) => path !== "" && !drop.some((re) => re.test(path)))
     .map((s) => s.section)
     .join("");
 }
