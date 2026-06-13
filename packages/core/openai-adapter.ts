@@ -49,7 +49,11 @@ interface OpenAiResponse {
     message: { content: string | null; tool_calls?: OpenAiToolCall[] };
     finish_reason: string;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
   error?: { message: string };
 }
 
@@ -172,6 +176,9 @@ export function fromOpenAiResponse(res: OpenAiResponse): ChatResponse {
     usage: {
       input_tokens: res.usage?.prompt_tokens ?? 0,
       output_tokens: res.usage?.completion_tokens ?? 0,
+      // OpenAI reports automatically-cached prefix tokens here; surface them so
+      // traces show whether the proxy is caching (cacheRead was always 0 before).
+      cache_read_input_tokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
     },
   };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runAgent, compactMessages, compactMessagesSmart, DEFAULT_COMPACTION, reasoningParams } from "./agent-runner";
+import { runAgent, compactMessages, compactMessagesSmart, DEFAULT_COMPACTION, reasoningParams, withHistoryCacheBreakpoint } from "./agent-runner";
 import type {
   CreateMessageFn,
   MessageParam,
@@ -475,5 +475,42 @@ describe("compactMessagesSmart", () => {
     const msgs = bigMsgs(10);
     const out = await compactMessagesSmart(msgs, { maxChars: 50_000, keepLastTurns: 2 });
     expect(out.length).toBe(msgs.length);
+  });
+});
+
+describe("withHistoryCacheBreakpoint", () => {
+  it("marks the last block of the final message and leaves the input untouched", () => {
+    const msgs = [
+      { role: "user" as const, content: "hello" },
+      { role: "assistant" as const, content: [
+        { type: "text" as const, text: "thinking" },
+        { type: "tool_use" as const, id: "t1", name: "read", input: {} },
+      ] },
+    ];
+    const out = withHistoryCacheBreakpoint(msgs);
+    const lastBlocks = out[out.length - 1].content as any[];
+    expect(lastBlocks[lastBlocks.length - 1].cache_control).toEqual({ type: "ephemeral" });
+    // earlier block untouched
+    expect(lastBlocks[0].cache_control).toBeUndefined();
+    // original input not mutated
+    expect((msgs[1].content as any[])[1].cache_control).toBeUndefined();
+  });
+
+  it("wraps a trailing string-content message into a cached text block", () => {
+    const msgs = [
+      { role: "user" as const, content: "first" },
+      { role: "user" as const, content: "do the thing" },
+    ];
+    const out = withHistoryCacheBreakpoint(msgs);
+    const blocks = out[1].content as any[];
+    expect(blocks[0]).toEqual({ type: "text", text: "do the thing", cache_control: { type: "ephemeral" } });
+    expect(typeof msgs[1].content).toBe("string"); // original untouched
+  });
+
+  it("returns the input unchanged for an empty or single-message history", () => {
+    const empty: any[] = [];
+    expect(withHistoryCacheBreakpoint(empty)).toBe(empty);
+    const single = [{ role: "user" as const, content: "solo" }];
+    expect(withHistoryCacheBreakpoint(single)).toBe(single);
   });
 });

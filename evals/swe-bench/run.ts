@@ -68,7 +68,7 @@ const suite = await runSWEBenchSuite(instances, {
   modelOverride,
   autoSteering,
   costCapUsd: costCap,
-  maxIterationsPerState: 30,
+  maxIterationsPerState: 15,
 });
 
 console.log("\n" + formatSummary(suite));

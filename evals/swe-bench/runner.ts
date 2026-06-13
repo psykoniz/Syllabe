@@ -132,7 +132,7 @@ export async function runInstance(
         tracePath,
         createMessage,
         autoYes: true,
-        maxIterationsPerState: opts.maxIterationsPerState ?? 25,
+        maxIterationsPerState: opts.maxIterationsPerState ?? 15,
         modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
         autoSteering: opts.autoSteering ?? false,
       });

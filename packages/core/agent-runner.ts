@@ -264,6 +264,32 @@ function truncateResult(content: string, maxChars = 16000): string {
 
 const COMPACT_BLOCK_MAX_CHARS = 200;
 
+/** Return a shallow copy of the history with a cache_control breakpoint on the
+ *  last block of the final message. Combined with the static system+tools
+ *  breakpoints, this makes Anthropic bill the whole accumulating prefix at
+ *  cache-read rates on every turn (the dominant cost in long agentic loops).
+ *  The extra field is ignored by providers that don't support it (e.g. OpenAI),
+ *  so it's safe on every path. The stored `messages` array is left untouched. */
+export function withHistoryCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
+  // On the first turn there is no accumulated prefix to read from cache yet, so
+  // skip — this also keeps the initial string prompt as a string for providers
+  // and callers that distinguish it from tool-result (block) messages.
+  if (messages.length <= 1) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1];
+  const blocks =
+    typeof last.content === "string"
+      ? [{ type: "text" as const, text: last.content }]
+      : last.content.map((b) => ({ ...b }));
+  if (blocks.length === 0) return messages;
+  blocks[blocks.length - 1] = {
+    ...blocks[blocks.length - 1],
+    cache_control: { type: "ephemeral" },
+  } as (typeof blocks)[number];
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
+}
+
 /** Shrink an old message without breaking tool_use/tool_result pairing:
  *  every block keeps its position and ids — only content strings shrink. */
 function compactMessage(msg: MessageParam): MessageParam {
@@ -405,7 +431,7 @@ export async function runAgent(
       model: opts.model,
       max_tokens: opts.maxTokensPerTurn ?? 8192,
       system,
-      messages,
+      messages: withHistoryCacheBreakpoint(messages),
       tools,
       ...reasoningParams(opts.model, opts.effort),
     });
