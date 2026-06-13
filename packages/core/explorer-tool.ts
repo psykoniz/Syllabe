@@ -73,6 +73,7 @@ export function createExploreDispatcher(opts: ExploreDispatcherOptions) {
           toolContext: opts.toolContext,
           tools,
           maxIterations,
+          effort: "low",
         }
       );
       return { content: result.finalText || "(no findings)", isError: false };

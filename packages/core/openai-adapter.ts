@@ -194,27 +194,41 @@ export function openAiCreateMessage(opts: OpenAiAdapterOptions = {}): CreateMess
   return async (params) => {
     const body = JSON.stringify(toOpenAiRequest(params));
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const res = await doFetch(`${baseUrl}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+      try {
+        const res = await doFetch(`${baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
 
-      if (res.ok) {
-        return fromOpenAiResponse((await res.json()) as OpenAiResponse);
-      }
+        if (res.ok) {
+          return fromOpenAiResponse((await res.json()) as OpenAiResponse);
+        }
 
-      const retryable = res.status === 429 || res.status >= 500;
-      if (!retryable || attempt === maxRetries - 1) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`openai: HTTP ${res.status} ${text.slice(0, 200)}`);
+        const retryable = res.status === 429 || res.status >= 500;
+        if (!retryable || attempt === maxRetries - 1) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`openai: HTTP ${res.status} ${text.slice(0, 200)}`);
+        }
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        console.error(`[openai retry ${attempt + 1}/${maxRetries}] HTTP ${res.status} — waiting ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (attempt === maxRetries - 1) {
+          throw err;
+        }
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        console.error(`[openai retry ${attempt + 1}/${maxRetries}] Network/Timeout Error: ${(err as Error).message} — waiting ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
       }
-      const delay = Math.min(2000 * 2 ** attempt, 30000);
-      console.error(`[openai retry ${attempt + 1}/${maxRetries}] HTTP ${res.status} — waiting ${delay}ms`);
-      await new Promise((r) => setTimeout(r, delay));
     }
     throw new Error("unreachable");
   };
