@@ -21,7 +21,7 @@ import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "child_process";
 import { buildTaskPrompt } from "./loader";
-import { stripTestChanges, toPredictionLine } from "./predictions";
+import { stripNonSourceChanges, toPredictionLine } from "./predictions";
 import type { SweBenchInstance } from "./loader";
 
 const OUTPUT_DIR = "evals/results/swe-bench";
@@ -65,15 +65,32 @@ function setupWorkspace(instance: SweBenchInstance, workspace: string): boolean 
   return true;
 }
 
+/** Git pathspecs excluding agent-internal dirs and build artifacts, so they
+ *  are never staged or diffed (also keeps the binary runs.db out of the diff). */
+const DIFF_EXCLUDES = [
+  ":(exclude).agent/**",
+  ":(exclude).projectos/**",
+  ":(exclude)**/node_modules/**",
+  ":(exclude)**/__pycache__/**",
+  ":(exclude)bun.lock",
+  ":(exclude)bun.lockb",
+  ":(exclude)*.log",
+];
+
 /** Source-only diff of everything the agent changed vs base_commit. */
 function extractModelPatch(workspace: string, baseCommit: string): string {
-  // Stage everything (incl. new files) so the diff captures untracked work too.
-  spawnSync("git", ["add", "-A"], { cwd: workspace, encoding: "utf8" });
-  const r = spawnSync("git", ["diff", baseCommit, "--"], {
+  // Stage everything (incl. new files) so the diff captures untracked work too,
+  // but keep agent metadata and build artifacts out of the index.
+  spawnSync("git", ["add", "-A", "--", ".", ...DIFF_EXCLUDES], {
+    cwd: workspace, encoding: "utf8",
+  });
+  const r = spawnSync("git", ["diff", baseCommit, "--", ".", ...DIFF_EXCLUDES], {
     cwd: workspace, encoding: "utf8", maxBuffer: 50 * 1024 * 1024,
   });
   if (r.status !== 0) return "";
-  return stripTestChanges(r.stdout ?? "");
+  // Belt-and-suspenders: also strip test files and any internal sections that
+  // slipped past the pathspec (e.g. already-tracked artifacts).
+  return stripNonSourceChanges(r.stdout ?? "");
 }
 
 /** Run a single instance: solve + extract patch (no scoring). */

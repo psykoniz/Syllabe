@@ -2,9 +2,33 @@ import { describe, expect, it } from "bun:test";
 import {
   splitDiffByFile,
   stripTestChanges,
+  stripNonSourceChanges,
   toPredictionLine,
   TEST_FILE_PATTERNS,
+  INTERNAL_FILE_PATTERNS,
 } from "./predictions";
+
+const INTERNAL_SECTION = `diff --git a/.agent/task.md b/.agent/task.md
+--- /dev/null
++++ b/.agent/task.md
+@@ -0,0 +1,2 @@
++# Task
++do the thing
+`;
+
+const LOG_SECTION = `diff --git a/pytest.log b/pytest.log
+--- /dev/null
++++ b/pytest.log
+@@ -0,0 +1,1 @@
++all green
+`;
+
+const LOCK_SECTION = `diff --git a/bun.lock b/bun.lock
+--- /dev/null
++++ b/bun.lock
+@@ -0,0 +1,1 @@
++{}
+`;
 
 const SRC_SECTION = `diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py
 --- a/astropy/modeling/separable.py
@@ -70,6 +94,49 @@ describe("TEST_FILE_PATTERNS", () => {
     "lib/contest.py",
   ])("does not match source path %s", (path) => {
     expect(TEST_FILE_PATTERNS.some((re) => re.test(path))).toBe(false);
+  });
+});
+
+describe("stripNonSourceChanges", () => {
+  it("keeps source and drops test + internal + artifact sections", () => {
+    const full = SRC_SECTION + TEST_SECTION + INTERNAL_SECTION + LOG_SECTION + LOCK_SECTION;
+    const stripped = stripNonSourceChanges(full);
+    expect(stripped).toContain("separable.py");
+    expect(stripped).not.toContain("test_separable.py");
+    expect(stripped).not.toContain(".agent/task.md");
+    expect(stripped).not.toContain("pytest.log");
+    expect(stripped).not.toContain("bun.lock");
+  });
+
+  it("returns empty when only internal/artifact files changed", () => {
+    expect(stripNonSourceChanges(INTERNAL_SECTION + LOG_SECTION + LOCK_SECTION).trim()).toBe("");
+  });
+
+  it("is a no-op for a pure source diff", () => {
+    expect(stripNonSourceChanges(SRC_SECTION)).toBe(SRC_SECTION);
+  });
+});
+
+describe("INTERNAL_FILE_PATTERNS", () => {
+  it.each([
+    ".agent/task.md",
+    ".projectos/runs.db",
+    "bun.lock",
+    "bun.lockb",
+    "node_modules/foo/index.js",
+    "pkg/__pycache__/x.cpython-39.pyc",
+    "build_ext.log",
+    "x/y.pyc",
+  ])("matches internal/artifact path %s", (path) => {
+    expect(INTERNAL_FILE_PATTERNS.some((re) => re.test(path))).toBe(true);
+  });
+
+  it.each([
+    "astropy/modeling/separable.py",
+    "django/forms/fields.py",
+    "src/agent/handler.ts",
+  ])("does not match genuine source path %s", (path) => {
+    expect(INTERNAL_FILE_PATTERNS.some((re) => re.test(path))).toBe(false);
   });
 });
 
