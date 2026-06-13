@@ -411,6 +411,123 @@ describe("runAgent — compaction integration", () => {
   });
 });
 
+describe("runAgent — resilience", () => {
+  it("retries a transient 5xx then succeeds", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        const err = new Error("server error") as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      return {
+        content: [{ type: "text", text: "recovered" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "hi" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+    });
+    expect(calls).toBe(2);
+    expect(result.finalText).toBe("recovered");
+    rmSync(TMP, { recursive: true, force: true });
+  }, 15_000);
+
+  it("does NOT retry a deterministic 400", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      const err = new Error("bad request") as Error & { status: number };
+      err.status = 400;
+      throw err;
+    };
+    await expect(
+      runAgent([{ role: "user", content: "hi" }], {
+        createMessage: create,
+        model: "claude-sonnet-4-6",
+        toolContext: ctx,
+      })
+    ).rejects.toThrow(/bad request/);
+    expect(calls).toBe(1);
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("prompts the model to continue when a turn is cut off by max_tokens", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [{ type: "text", text: "partial..." }],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+      return {
+        content: [{ type: "text", text: "...complete" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "write a lot" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+    });
+    expect(calls).toBe(2);
+    expect(result.finalText).toBe("...complete");
+    // a continuation nudge was inserted between the two assistant turns
+    const nudge = result.messages.find(
+      (m) => typeof m.content === "string" && m.content.includes("cut off at the token limit")
+    );
+    expect(nudge).toBeDefined();
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("never throws out of tool dispatch — surfaces an error tool_result instead", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "x" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+      return {
+        content: [{ type: "text", text: "saw the error" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "go" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+      extraDispatcher: async () => {
+        throw new Error("dispatcher blew up");
+      },
+    });
+    // the loop survived and the assistant tool_use has a matching tool_result
+    const toolResult = result.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result") as ToolResultBlock | undefined;
+    expect(toolResult?.is_error).toBe(true);
+    expect(toolResult?.content).toContain("dispatcher blew up");
+    expect(result.finalText).toBe("saw the error");
+    rmSync(TMP, { recursive: true, force: true });
+  });
+});
+
 describe("reasoningParams", () => {
   it("fable gets adaptive thinking, effort defaults to high", () => {
     expect(reasoningParams("claude-fable-5")).toEqual({

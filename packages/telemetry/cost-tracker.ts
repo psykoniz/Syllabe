@@ -4,6 +4,7 @@ const PRICE_PER_MILLION: Record<string, { input: number; output: number }> = {
   "claude-sonnet-4-6":   { input: 3.0,   output: 15.0  },
   "claude-haiku-4-5":    { input: 1.0,   output: 5.0   },
   "gpt-5.5":             { input: 10.0,  output: 40.0  },
+  "gpt-5.4":             { input: 10.0,  output: 40.0  },
   "gpt-4o":              { input: 2.5,   output: 10.0  },
   "gpt-4o-mini":         { input: 0.15,  output: 0.6   },
 };

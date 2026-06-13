@@ -234,6 +234,25 @@ export class ProjectRun implements AgentHandler {
     return `### Existing codebase\n${this.repoTree}\n\n${EXISTING_REPO_INSTRUCTION}`;
   }
 
+  /** Architecture + implementation plan, inlined for IMPLEMENT so the agent
+   *  does not burn turns reading them back. Capped to keep input cost bounded. */
+  private framedBlueprint(): string | null {
+    const cap = 6000;
+    const sections: string[] = [];
+    for (const [label, file] of [
+      ["Architecture", "architecture.md"],
+      ["Implementation plan", "implementation-plan.md"],
+    ] as const) {
+      const p = join(this.agentDir, file);
+      if (!existsSync(p)) continue;
+      let body = readFileSync(p, "utf8").trim();
+      if (!body) continue;
+      if (body.length > cap) body = body.slice(0, cap) + "\n[... truncated; read the full file if needed]";
+      sections.push(`### ${label} (.agent/${file})\n${body}`);
+    }
+    return sections.length > 0 ? sections.join("\n\n") : null;
+  }
+
   // ─── AgentHandler ──────────────────────────────────────────────────────────
 
   async onState(state: State, ctx: RunContext): Promise<MachineEvent> {
@@ -476,14 +495,19 @@ export class ProjectRun implements AgentHandler {
     const wu = ctx.workUnits[ctx.workUnitIndex];
     if (!wu) return { type: "IMPLEMENT_DONE" };
 
+    // Inject the blueprint content directly rather than only naming the files:
+    // otherwise the implementer must spend extra turns reading them back from
+    // disk (and may hit the token ceiling mid-read on a large plan).
+    const blueprint = this.framedBlueprint();
+
     const prompt = buildStatePrompt("IMPLEMENT", this.cfg.task, {
-      context: this.framedRepoTree() ?? undefined,
+      context: [blueprint, this.framedRepoTree()].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit ${ctx.workUnitIndex + 1}/${ctx.workUnits.length}: **${wu.description}**`,
         "",
         "Implement this work unit completely:",
         "- Write all necessary source files using write_file",
-        "- Follow the architecture.md and implementation-plan.md in .agent/",
+        "- Follow the architecture and implementation plan included above",
         "- Do not write tests yet — that happens in the TEST state",
         "- When done, summarise what you created",
       ],

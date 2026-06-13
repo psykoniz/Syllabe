@@ -36,6 +36,18 @@ describe("read", () => {
     expect(JSON.parse(log).tool).toBe("read");
     expect(JSON.parse(log).result).toBe("ok");
   });
+
+  it("returns a numbered line range when start/end given", () => {
+    const fp = join(TMP, "range.txt");
+    writeFileSync(fp, "l1\nl2\nl3\nl4\nl5");
+    expect(makeTools().read(fp, { startLine: 2, endLine: 4 })).toBe("2\tl2\n3\tl3\n4\tl4");
+  });
+
+  it("clamps an out-of-bounds range to the file", () => {
+    const fp = join(TMP, "range2.txt");
+    writeFileSync(fp, "a\nb");
+    expect(makeTools().read(fp, { startLine: 1, endLine: 99 })).toBe("1\ta\n2\tb");
+  });
 });
 
 describe("write", () => {
@@ -124,9 +136,11 @@ describe("grep", () => {
     expect(results.matches).toHaveLength(0);
   });
 
-  it("skips missing files silently", () => {
-    const results = makeTools().grep("x", [join(tmpdir(), "does-not-exist-ever.txt")]);
+  it("reports missing files instead of skipping them silently", () => {
+    const missing = join(tmpdir(), "does-not-exist-ever.txt");
+    const results = makeTools().grep("x", [missing]);
     expect(results.matches).toHaveLength(0);
+    expect(results.missingFiles).toEqual([missing]);
   });
 });
 

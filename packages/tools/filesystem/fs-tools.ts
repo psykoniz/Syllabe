@@ -37,6 +37,16 @@ export interface GrepMatch {
 export interface GrepResult {
   matches: GrepMatch[];
   truncated: boolean;
+  /** Requested paths that did not exist — surfaced so the caller is not misled
+   *  into believing a search returned no matches when the file was simply absent. */
+  missingFiles: string[];
+}
+
+export interface ReadOptions {
+  /** 1-indexed first line to return (inclusive) */
+  startLine?: number;
+  /** 1-indexed last line to return (inclusive) */
+  endLine?: number;
 }
 
 const GLOB_DEFAULT_LIMIT = 500;
@@ -80,11 +90,24 @@ export class FsTools {
     });
   }
 
-  read(filePath: string): string {
+  read(filePath: string, opts: ReadOptions = {}): string {
     const start = Date.now();
     try {
       if (!existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
       const content = readFileSync(filePath, "utf8");
+      // Optional line-range slice so the agent can target a region of a large
+      // file instead of pulling the whole thing (10k-line source files are
+      // common on real repos). 1-indexed, inclusive on both ends.
+      if (opts.startLine !== undefined || opts.endLine !== undefined) {
+        const lines = content.split("\n");
+        const from = Math.max(1, opts.startLine ?? 1);
+        const to = Math.min(lines.length, opts.endLine ?? lines.length);
+        const slice = lines.slice(from - 1, to);
+        // Prefix each line with its real number so edits stay anchored.
+        const numbered = slice.map((l, i) => `${from + i}\t${l}`).join("\n");
+        this.log("read", { filePath, startLine: from, endLine: to }, Date.now() - start);
+        return numbered;
+      }
       this.log("read", { filePath }, Date.now() - start);
       return content;
     } catch (e) {
@@ -209,9 +232,13 @@ export class FsTools {
     try {
       const re = new RegExp(pattern);
       const matches: GrepMatch[] = [];
+      const missingFiles: string[] = [];
       let truncated = false;
       outer: for (const fp of filePaths) {
-        if (!existsSync(fp)) continue;
+        if (!existsSync(fp)) {
+          missingFiles.push(fp);
+          continue;
+        }
         const lines = readFileSync(fp, "utf8").split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (!re.test(lines[i])) continue;
@@ -229,8 +256,8 @@ export class FsTools {
           matches.push(m);
         }
       }
-      this.log("grep", { pattern, fileCount: filePaths.length, matchCount: matches.length, truncated }, Date.now() - start);
-      return { matches, truncated };
+      this.log("grep", { pattern, fileCount: filePaths.length, matchCount: matches.length, truncated, missing: missingFiles.length }, Date.now() - start);
+      return { matches, truncated, missingFiles };
     } catch (e) {
       this.log("grep", { pattern }, Date.now() - start, (e as Error).message);
       throw e;
@@ -255,7 +282,7 @@ function walk(dir: string, parts: string[], baseDir: string): string[] {
     // match one or more levels
     for (const entry of safeReaddir(dir)) {
       const full = join(dir, entry);
-      if (statSync(full).isDirectory()) {
+      if (safeIsDirectory(full)) {
         results.push(...walk(full, parts, baseDir));
       }
     }
@@ -268,7 +295,7 @@ function walk(dir: string, parts: string[], baseDir: string): string[] {
     const full = join(dir, entry);
     if (rest.length === 0) {
       results.push(relative(baseDir, full));
-    } else if (statSync(full).isDirectory()) {
+    } else if (safeIsDirectory(full)) {
       results.push(...walk(full, rest, baseDir));
     }
   }
@@ -277,4 +304,10 @@ function walk(dir: string, parts: string[], baseDir: string): string[] {
 
 function safeReaddir(dir: string): string[] {
   try { return readdirSync(dir); } catch { return []; }
+}
+
+/** statSync that tolerates a file vanishing between readdir and stat (a real
+ *  race on large, churning trees) instead of throwing and aborting the glob. */
+function safeIsDirectory(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
 }

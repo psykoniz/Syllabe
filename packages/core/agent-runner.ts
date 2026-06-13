@@ -235,16 +235,29 @@ async function executeToolUse(
     }
   }
 
-  const extra = opts.extraDispatcher
-    ? await opts.extraDispatcher(block.name, block.input)
-    : null;
-  const dispatched = extra ?? dispatchTool(block.name, block.input, opts.toolContext);
-  return {
-    type: "tool_result",
-    tool_use_id: block.id,
-    content: truncateResult(redact(dispatched.content), opts.maxToolResultChars),
-    is_error: dispatched.isError || undefined,
-  };
+  // Never let a dispatcher throw escape: an uncaught error here would leave the
+  // assistant's tool_use block in the history with no matching tool_result,
+  // corrupting the conversation for any subsequent turn. Surface it as an error
+  // result instead so the pairing always stays intact.
+  try {
+    const extra = opts.extraDispatcher
+      ? await opts.extraDispatcher(block.name, block.input)
+      : null;
+    const dispatched = extra ?? dispatchTool(block.name, block.input, opts.toolContext);
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: truncateResult(redact(dispatched.content), opts.maxToolResultChars),
+      is_error: dispatched.isError || undefined,
+    };
+  } catch (err) {
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: `tool execution failed: ${(err as Error).message}`,
+      is_error: true,
+    };
+  }
 }
 
 /** Cap tool output fed back into context — long test logs and file dumps
@@ -306,6 +319,15 @@ function compactMessage(msg: MessageParam): MessageParam {
     }
     if (block.type === "text" && block.text.length > COMPACT_BLOCK_MAX_CHARS) {
       return { ...block, text: block.text.slice(0, COMPACT_BLOCK_MAX_CHARS) };
+    }
+    if (block.type === "tool_use") {
+      // A large tool_use input (e.g. a multi-KB bash script or write_file body)
+      // survives compaction otherwise; shrink it while keeping id/name/position
+      // so the tool_use/tool_result pairing stays intact.
+      const serialized = JSON.stringify(block.input);
+      if (serialized.length > COMPACT_BLOCK_MAX_CHARS) {
+        return { ...block, input: { _omitted: `tool input omitted: ${serialized.length} chars` } };
+      }
     }
     return block;
   });
@@ -374,6 +396,44 @@ function textOf(content: ContentBlock[]): string {
     .join("\n");
 }
 
+/** Extract an HTTP status from a thrown error, however the provider shaped it. */
+function errorStatus(err: unknown): number | undefined {
+  const e = err as { status?: number; statusCode?: number; response?: { status?: number } };
+  return e?.status ?? e?.statusCode ?? e?.response?.status;
+}
+
+/** A transient error is worth retrying: 429, any 5xx, or a network-level
+ *  failure (no HTTP status at all — connection reset, timeout, DNS, …).
+ *  Deterministic 4xx (bad request, auth) are NOT retried. */
+function isTransient(err: unknown): boolean {
+  const status = errorStatus(err);
+  if (status === undefined) return true; // network/abort — no response received
+  return status === 429 || status >= 500;
+}
+
+/** Call createMessage with bounded exponential backoff on transient failures.
+ *  The OpenAI adapter already retries 429 internally; this guards every
+ *  provider (incl. the real Anthropic client) against 5xx and network resets,
+ *  which previously crashed the whole agentic loop on the first blip. */
+async function createMessageWithRetry(
+  createMessage: CreateMessageFn,
+  params: CreateMessageParams,
+  maxRetries = 3
+): Promise<ChatResponse> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await createMessage(params);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxRetries || !isTransient(err)) throw err;
+      const delayMs = 2000 * 2 ** attempt; // 2s, 4s, 8s
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 /** Bounded agentic loop over /v1/messages with tool use.
  *  Replaces the Managed Agents session loop (see ADR-006). */
 export async function runAgent(
@@ -427,7 +487,7 @@ export async function runAgent(
       messages.splice(0, messages.length, ...compacted);
     }
 
-    const response = await opts.createMessage({
+    const response = await createMessageWithRetry(opts.createMessage, {
       model: opts.model,
       max_tokens: opts.maxTokensPerTurn ?? 8192,
       system,
@@ -453,6 +513,20 @@ export async function runAgent(
       toolCalls: toolUses.map((t) => t.name),
     });
 
+    // The model hit the per-turn token ceiling mid-response: rather than return
+    // a truncated answer, prompt it to continue exactly where it left off.
+    // Only do this when there is budget left and no tool call is pending.
+    if (response.stop_reason === "max_tokens" && toolUses.length === 0 && turn < maxIterations) {
+      finalText = textOf(response.content);
+      messages.push({
+        role: "user",
+        content:
+          "Your previous response was cut off at the token limit. Continue exactly where you " +
+          "left off — do not repeat what you already wrote.",
+      });
+      continue;
+    }
+
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
       finalText = textOf(response.content);
       return {
@@ -463,6 +537,12 @@ export async function runAgent(
         stopReason: response.stop_reason ?? "end_turn",
       };
     }
+
+    // Keep the latest assistant prose as finalText so a run that exhausts its
+    // iteration budget mid-tool-loop still returns the model's last words
+    // instead of an empty string.
+    const latestText = textOf(response.content);
+    if (latestText) finalText = latestText;
 
     const results: ToolResultBlock[] = [];
     for (const block of toolUses) {
