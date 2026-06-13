@@ -82,9 +82,9 @@ les phases mécaniques — afin de maîtriser le budget en tokens.
    * `architect` : Conception des blueprints et du plan d'implémentation.
    * `reviewer` : Évaluation finale de la qualité et validation du code produit.
    * `product-strategist` : Cadrage du besoin et clarification des prérequis.
+   * `implementer` : Écriture du code source — c'est lui qui produit le patch noté.
 
 2. **Rôles d'Exécution & Tâches Simples (Effort `low`)** :
-   * `implementer` : Écriture du code source et réparation de bugs simples.
    * `test-engineer` : Écriture et lancement des tests unitaires.
    * `memory-curator` : Rédaction des leçons apprises en fin d'exécution.
    * `harness-optimizer` : Optimisations système.
