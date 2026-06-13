@@ -259,6 +259,33 @@ export function findRelevantFiles(
   return [...files];
 }
 
+/** Render the relevant files as an indented sub-tree of their ancestor
+ *  directories, so the agent sees the structure around the work even when the
+ *  main alphabetical tree was truncated before reaching them. */
+export function relevantDirTree(files: string[]): string {
+  if (files.length === 0) return "";
+  // Build a nested map of path segments.
+  type Node = Map<string, Node>;
+  const root: Node = new Map();
+  for (const f of files) {
+    let cur = root;
+    for (const seg of f.split("/")) {
+      if (!cur.has(seg)) cur.set(seg, new Map());
+      cur = cur.get(seg)!;
+    }
+  }
+  const lines: string[] = [];
+  const render = (node: Node, prefix: string) => {
+    for (const key of [...node.keys()].sort()) {
+      const child = node.get(key)!;
+      lines.push(`${prefix}${key}${child.size > 0 ? "/" : ""}`);
+      if (child.size > 0) render(child, prefix + "  ");
+    }
+  };
+  render(root, "");
+  return lines.join("\n");
+}
+
 /** Read the first N lines of files for concise prompt injection. */
 function readExcerpts(
   workspace: string,
@@ -294,6 +321,11 @@ export function buildSmartRepoContext(
   // 2. Find files matching task keywords
   const relevantFiles = findRelevantFiles(workspace, keywords);
 
+  // 2b. The alphabetical tree truncates on large repos, so the directories
+  //     holding the relevant files may never appear. Surface them explicitly
+  //     as a focused sub-tree so the agent always sees where the work lives.
+  const focusedDirs = relevantDirTree(relevantFiles);
+
   // 3. Read excerpts of the most relevant files
   const excerpts = readExcerpts(workspace, relevantFiles);
 
@@ -303,6 +335,10 @@ export function buildSmartRepoContext(
     tree.lines.join("\n") || "(empty)",
     "```",
   ];
+
+  if (tree.truncated && focusedDirs) {
+    sections.push("", "#### Task-relevant paths (tree was truncated)", "```", focusedDirs, "```");
+  }
 
   if (relevantFiles.length > 0) {
     sections.push(

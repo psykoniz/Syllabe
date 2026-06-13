@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles } from "./repo-context";
+import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree } from "./repo-context";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -106,6 +106,26 @@ describe("findRelevantFiles", () => {
     const files = findRelevantFiles(dir, ["widget"]);
     expect(files).toContain("main.go");
     expect(files).toContain("lib.rs");
+  });
+});
+
+describe("relevantDirTree", () => {
+  it("renders ancestor dirs as a nested sub-tree", () => {
+    const out = relevantDirTree([
+      "astropy/modeling/separable.py",
+      "astropy/modeling/core.py",
+      "django/forms/fields.py",
+    ]);
+    expect(out).toContain("astropy/");
+    expect(out).toContain("  modeling/");
+    expect(out).toContain("    separable.py");
+    expect(out).toContain("    core.py");
+    expect(out).toContain("django/");
+    expect(out).toContain("    fields.py");
+  });
+
+  it("is empty for no files", () => {
+    expect(relevantDirTree([])).toBe("");
   });
 });
 

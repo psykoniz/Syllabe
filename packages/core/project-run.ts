@@ -500,8 +500,13 @@ export class ProjectRun implements AgentHandler {
     // disk (and may hit the token ceiling mid-read on a large plan).
     const blueprint = this.framedBlueprint();
 
+    // Give the implementer the task-guided context (relevant file paths +
+    // excerpts) rather than a bare tree: it edits files it has actually seen,
+    // instead of burning turns on read_file or failing edit_file on unseen code.
+    const codebase = this.framedRepoContext() ?? this.framedRepoTree();
+
     const prompt = buildStatePrompt("IMPLEMENT", this.cfg.task, {
-      context: [blueprint, this.framedRepoTree()].filter(Boolean).join("\n\n") || undefined,
+      context: [blueprint, codebase].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit ${ctx.workUnitIndex + 1}/${ctx.workUnits.length}: **${wu.description}**`,
         "",
