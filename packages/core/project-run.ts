@@ -121,16 +121,17 @@ const ROLE_EFFORT: Record<Role, EffortLevel> = {
 
 /** State → role mapping */
 const STATE_ROLE: Partial<Record<State, Role>> = {
-  INTAKE:    "product-strategist",
-  CLARIFY:   "product-strategist",
-  DESIGN:    "architect",
-  PLAN:      "architect",
-  IMPLEMENT: "implementer",
-  TEST:      "test-engineer",
-  REPAIR:    "implementer",
-  REVIEW:    "reviewer",
-  DOCUMENT:  "implementer",
-  LEARN:     "memory-curator",
+  INTAKE:     "product-strategist",
+  CLARIFY:    "product-strategist",
+  DESIGN:     "architect",
+  PLAN:       "architect",
+  REPRODUCE:  "test-engineer",
+  IMPLEMENT:  "implementer",
+  TEST:       "test-engineer",
+  REPAIR:     "implementer",
+  REVIEW:     "reviewer",
+  DOCUMENT:   "implementer",
+  LEARN:      "memory-curator",
 };
 
 export class ProjectRun implements AgentHandler {
@@ -270,17 +271,18 @@ export class ProjectRun implements AgentHandler {
 
   async onState(state: State, ctx: RunContext): Promise<MachineEvent> {
     switch (state) {
-      case "INTAKE":    return this.handleIntake();
-      case "CLARIFY":   return this.handleClarify();
-      case "DESIGN":    return this.handleDesign(ctx);
-      case "PLAN":      return this.handlePlan(ctx);
-      case "IMPLEMENT": return this.handleImplement(ctx);
-      case "TEST":      return this.handleTest(ctx);
-      case "REPAIR":    return this.handleRepair(ctx);
-      case "REVIEW":    return this.handleReview(ctx);
-      case "DOCUMENT":  return this.handleDocument();
-      case "LEARN":     return this.handleLearn();
-      default:          return { type: "ESCALATE", reason: `unhandled state: ${state}` };
+      case "INTAKE":     return this.handleIntake();
+      case "CLARIFY":    return this.handleClarify();
+      case "DESIGN":     return this.handleDesign(ctx);
+      case "PLAN":       return this.handlePlan(ctx);
+      case "REPRODUCE":  return this.handleReproduce(ctx);
+      case "IMPLEMENT":  return this.handleImplement(ctx);
+      case "TEST":       return this.handleTest(ctx);
+      case "REPAIR":     return this.handleRepair(ctx);
+      case "REVIEW":     return this.handleReview(ctx);
+      case "DOCUMENT":   return this.handleDocument();
+      case "LEARN":      return this.handleLearn();
+      default:           return { type: "ESCALATE", reason: `unhandled state: ${state}` };
     }
   }
 
@@ -502,6 +504,42 @@ export class ProjectRun implements AgentHandler {
         return { approved, mustFix: approved ? [] : [result.finalText.slice(0, 500)] };
       },
     };
+  }
+
+  private async handleReproduce(ctx: RunContext): Promise<MachineEvent> {
+    // Skip REPRODUCE when there is no existing repo — brand-new projects have no
+    // failing baseline to reproduce against. Similarly skip when the task is pure
+    // creation ("add a feature", "build X") rather than a bug fix.
+    const hasExistingRepo = existsSync(join(this.cfg.workspace, ".git"));
+    if (!hasExistingRepo) return { type: "REPRODUCE_SKIP" };
+
+    const wu = ctx.workUnits[0];
+    const codebase = this.framedRepoTree() ?? "";
+
+    const prompt = buildStatePrompt("REPRODUCE", this.cfg.task, {
+      context: codebase || undefined,
+      instructions: [
+        "Before implementing the fix, write a minimal test that REPRODUCES the bug or missing",
+        "behaviour described in the task. The test must:",
+        "  1. Fail on the CURRENT codebase (before any changes)",
+        "  2. Be located in a new file named `repro_test.<ext>` in the project root",
+        "  3. Use the project's existing test framework (bun:test, pytest, go test, etc.)",
+        "",
+        "Steps:",
+        "  a. Write the repro test with write_file",
+        "  b. Run it with bash — confirm it FAILS (exit code ≠ 0 means it fails as expected)",
+        "  c. Reply with REPRO: CONFIRMED if the test fails, or REPRO: SKIP if you cannot",
+        "     write a meaningful failing test for this task",
+        "",
+        wu ? `First work unit to fix: ${wu.description}` : "",
+      ].filter(Boolean),
+    });
+
+    const result = await this.callAgent("test-engineer", prompt);
+    const confirmed = /REPRO:\s*CONFIRMED/i.test(result.finalText);
+    // Either outcome lets IMPLEMENT proceed; CONFIRMED means the agent has a
+    // concrete red-test to guide the fix (and TEST will pick it up too).
+    return confirmed ? { type: "REPRODUCE_DONE" } : { type: "REPRODUCE_SKIP" };
   }
 
   private async handleImplement(ctx: RunContext): Promise<MachineEvent> {
@@ -890,20 +928,13 @@ export class ProjectRun implements AgentHandler {
   }
 
   private async extractWorkUnits(): Promise<WorkUnit[]> {
-    // Parse work units from implementation-plan.md
+    // Pure-code parsing — eliminates a full architect LLM call per run.
+    // The architect writes a predictable markdown format (numbered list,
+    // ## headers, or bullet points); any of the three is handled below.
     const planPath = join(this.agentDir, "implementation-plan.md");
     if (!existsSync(planPath)) return [{ id: "wu-1", description: this.cfg.task }];
-
-    const prompt = [
-      "Read the implementation plan below and extract an ordered list of work units.",
-      "Reply with JSON only — an array of objects with id (string) and description (string).",
-      "Example: [{\"id\":\"wu-1\",\"description\":\"Set up project structure\"}]",
-      "",
-      "Use read_file to load: " + planPath,
-    ].join("\n");
-
-    const result = await this.callAgent("architect", prompt);
-    return parseWorkUnits(result.finalText, this.cfg.task);
+    const content = readFileSync(planPath, "utf8");
+    return parseImplementationPlan(content, this.cfg.task);
   }
 
   // ─── Entry point ───────────────────────────────────────────────────────────
@@ -936,23 +967,37 @@ export class ProjectRun implements AgentHandler {
   }
 }
 
-function parseWorkUnits(text: string, fallbackTask: string): WorkUnit[] {
-  try {
-    const match = /\[[\s\S]*?\]/.exec(text);
-    if (match) {
-      const parsed = JSON.parse(match[0]) as unknown[];
-      const units = parsed.filter(
-        (u): u is WorkUnit =>
-          typeof u === "object" && u !== null &&
-          typeof (u as WorkUnit).id === "string" &&
-          typeof (u as WorkUnit).description === "string"
-      );
-      if (units.length > 0) return units.slice(0, 8);
+/** Parse work units from implementation-plan.md without an LLM call.
+ *  Handles the three formats the architect naturally produces:
+ *    1. Numbered list  "1. Description" / "1) Description"
+ *    2. Markdown headers  "## Work Unit 2: Do X" / "### Step 3"
+ *    3. Bold bullet  "- **Title**: description" / "- **Title**"
+ *  Picks the pattern with the most matches. Exported for unit testing. */
+export function parseImplementationPlan(content: string, fallbackTask: string): WorkUnit[] {
+  function extractMatches(re: RegExp, src: string): string[] {
+    const out: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      const text = (m[1] ?? "").replace(/\*{1,2}/g, "").trim();
+      if (text.length > 5 && !/^(implementation|test|work unit|step|phase|overview|summary|note|introduction)/i.test(text)) {
+        out.push(text);
+      }
     }
-  } catch {
-    // fall through to fallback
+    return out;
   }
-  return [{ id: "wu-1", description: fallbackTask }];
+
+  const candidates = [
+    extractMatches(/^(?:\d+[.)]\s+)(.+)/gm, content),
+    extractMatches(/^#{2,3}\s+(?:Work Unit\s*\d*:?\s*|\d+[.)]\s*)?(.+)/gm, content),
+    extractMatches(/^[-*]\s+(?:\*{1,2})?(.+?)(?:\*{1,2})?(?::.*)?$/gm, content),
+  ].filter((c) => c.length >= 1);
+
+  const best = candidates.sort((a, b) => b.length - a.length)[0] ?? [];
+  const units: WorkUnit[] = best
+    .slice(0, 8)
+    .map((desc, i) => ({ id: `wu-${i + 1}`, description: desc }));
+
+  return units.length > 0 ? units : [{ id: "wu-1", description: fallbackTask }];
 }
 
 function buildStatePrompt(

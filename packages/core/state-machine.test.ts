@@ -35,9 +35,19 @@ describe("happy path transitions", () => {
     expect(next.workUnits).toHaveLength(2);
   });
 
-  it("PLAN → IMPLEMENT on IMPLEMENT_DONE", () => {
+  it("PLAN → REPRODUCE on IMPLEMENT_DONE", () => {
     const ctx: RunContext = { ...makeContext(), state: "PLAN", workUnits: wu };
-    expect(transition(ctx, { type: "IMPLEMENT_DONE" }).state).toBe("IMPLEMENT");
+    expect(transition(ctx, { type: "IMPLEMENT_DONE" }).state).toBe("REPRODUCE");
+  });
+
+  it("REPRODUCE → IMPLEMENT on REPRODUCE_DONE", () => {
+    const ctx: RunContext = { ...makeContext(), state: "REPRODUCE", workUnits: wu };
+    expect(transition(ctx, { type: "REPRODUCE_DONE" }).state).toBe("IMPLEMENT");
+  });
+
+  it("REPRODUCE → IMPLEMENT on REPRODUCE_SKIP", () => {
+    const ctx: RunContext = { ...makeContext(), state: "REPRODUCE", workUnits: wu };
+    expect(transition(ctx, { type: "REPRODUCE_SKIP" }).state).toBe("IMPLEMENT");
   });
 
   it("PLAN → DOCUMENT when allUnitsComplete (parallel mode)", () => {

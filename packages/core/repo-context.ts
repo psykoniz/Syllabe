@@ -286,6 +286,76 @@ export function relevantDirTree(files: string[]): string {
   return lines.join("\n");
 }
 
+// ─── Signature extraction (repo map à la Aider) ──────────────────────────────
+
+/** Language-specific patterns for extracting public symbols (functions, classes,
+ *  methods, interfaces). Ordered by specificity — first match wins. */
+const SIG_PATTERNS: Array<{ exts: string[]; re: RegExp }> = [
+  {
+    exts: ["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+    re: /^(?:export\s+)?(?:async\s+)?(?:function\s+\w+|class\s+\w+|interface\s+\w+|type\s+\w+\s*=|const\s+\w+\s*=\s*(?:async\s+)?\(|(?:public|private|protected|static|\s)+(?:async\s+)?\w+\s*\()/m,
+  },
+  {
+    exts: ["py"],
+    re: /^(?:class\s+\w+|def\s+\w+|async\s+def\s+\w+)/m,
+  },
+  {
+    exts: ["go"],
+    re: /^(?:func\s+(?:\(\w+\s+\*?\w+\)\s+)?\w+|type\s+\w+\s+(?:struct|interface))/m,
+  },
+  {
+    exts: ["rs"],
+    re: /^(?:pub\s+)?(?:fn\s+\w+|struct\s+\w+|impl\s+\w+|trait\s+\w+|enum\s+\w+)/m,
+  },
+  {
+    exts: ["java", "kt", "scala", "cs"],
+    re: /^(?:\s*(?:public|private|protected|static|final|abstract|\s)+(?:class|interface|enum|\w+)\s+\w+)/m,
+  },
+  {
+    exts: ["rb"],
+    re: /^(?:class\s+\w+|module\s+\w+|def\s+\w+)/m,
+  },
+];
+
+/** Extract public symbol signatures from source code — one line per symbol.
+ *  Returns an empty array for binary/unrecognised files. */
+export function extractSignatures(filePath: string, content: string): string[] {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  const pattern = SIG_PATTERNS.find((p) => p.exts.includes(ext));
+  if (!pattern) return [];
+
+  const sigs: string[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trimStart();
+    if (pattern.re.test(trimmed)) {
+      // Strip body (everything after the opening brace/colon on the same line)
+      const sig = trimmed.replace(/\s*[{:]\s*$/, "").slice(0, 120);
+      if (sig) sigs.push(sig);
+    }
+  }
+  return sigs;
+}
+
+/** Build a compact repo map: file paths + their public symbol signatures.
+ *  Much denser than full excerpts — typically 5–10× fewer tokens. */
+export function buildRepoMap(workspace: string, files: string[]): string {
+  const sections: string[] = [];
+  for (const file of files) {
+    try {
+      const content = readFileSync(join(workspace, file), "utf8");
+      const sigs = extractSignatures(file, content);
+      if (sigs.length > 0) {
+        sections.push(`${file}:\n${sigs.map((s) => `  ${s}`).join("\n")}`);
+      } else {
+        // Non-source file or too terse to have signatures — show size hint
+        const lines = content.split("\n").length;
+        sections.push(`${file}: (${lines} lines)`);
+      }
+    } catch { /* skip unreadable */ }
+  }
+  return sections.join("\n");
+}
+
 /** Read the first N lines of files for concise prompt injection. */
 function readExcerpts(
   workspace: string,
@@ -326,8 +396,9 @@ export function buildSmartRepoContext(
   //     as a focused sub-tree so the agent always sees where the work lives.
   const focusedDirs = relevantDirTree(relevantFiles);
 
-  // 3. Read excerpts of the most relevant files
-  const excerpts = readExcerpts(workspace, relevantFiles);
+  // 3. Repo map (signatures) + full excerpts for the top files
+  const repoMap = buildRepoMap(workspace, relevantFiles);
+  const excerpts = readExcerpts(workspace, relevantFiles.slice(0, 5), 5, 80);
 
   const sections: string[] = [
     "#### File tree" + (tree.truncated ? " (truncated)" : ""),
@@ -348,8 +419,12 @@ export function buildSmartRepoContext(
     );
   }
 
+  if (repoMap) {
+    sections.push("", "#### Repo map (public symbols)", "```", repoMap, "```");
+  }
+
   if (excerpts) {
-    sections.push("", "#### Key file excerpts", excerpts);
+    sections.push("", "#### Key file excerpts (top 5)", excerpts);
   }
 
   const conventions = detectConventions(workspace);

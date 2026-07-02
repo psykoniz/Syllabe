@@ -32,7 +32,7 @@ export type { CheckpointRow } from "./checkpoint";
 export { openDb, ensureRunMetaTable, setRunMeta } from "./session-db";
 export { RunReplay } from "@projectos/replay";
 export type { ReplayEvent, ReplaySummary } from "@projectos/replay";
-export { redactGitUrl, buildRepoContext, buildRepoTree } from "./repo-context";
+export { redactGitUrl, buildRepoContext, buildRepoTree, buildRepoMap, extractSignatures } from "./repo-context";
 export type { RepoContextOptions } from "./repo-context";
 export { loadPromotedConfig } from "./promoted-config";
 export type { PromotedConfig } from "./promoted-config";

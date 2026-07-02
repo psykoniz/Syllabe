@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree } from "./repo-context";
+import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap } from "./repo-context";
+import { parseImplementationPlan } from "./project-run";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -141,5 +142,59 @@ describe("buildRepoTree", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("extractSignatures", () => {
+  it("extracts TypeScript exports", () => {
+    const src = `export function foo(a: string): void {}\nexport class Bar {}\nconst x = 1;\n`;
+    const sigs = extractSignatures("foo.ts", src);
+    expect(sigs.some((s) => s.includes("foo"))).toBe(true);
+    expect(sigs.some((s) => s.includes("Bar"))).toBe(true);
+  });
+
+  it("extracts Python defs", () => {
+    const src = `def separability_matrix(x):\n    pass\nclass Model:\n    pass\n`;
+    const sigs = extractSignatures("sep.py", src);
+    expect(sigs.some((s) => s.includes("separability_matrix"))).toBe(true);
+    expect(sigs.some((s) => s.includes("Model"))).toBe(true);
+  });
+
+  it("returns empty for unknown extension", () => {
+    expect(extractSignatures("binary.bin", "abc")).toEqual([]);
+  });
+});
+
+describe("buildRepoMap", () => {
+  it("renders symbol signatures for relevant files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "repo-map-"));
+    try {
+      writeFileSync(join(dir, "foo.ts"), `export function greet(name: string) {}\nexport class Greeter {}\n`);
+      const map = buildRepoMap(dir, ["foo.ts"]);
+      expect(map).toContain("foo.ts:");
+      expect(map).toContain("greet");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("parseImplementationPlan", () => {
+  it("parses numbered list", () => {
+    const md = `# Plan\n1. Set up project structure\n2. Write the parser\n3. Add tests\n`;
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBe(3);
+    expect(units[0].description).toContain("project structure");
+  });
+
+  it("parses markdown headers", () => {
+    const md = `## Step 1: Create the CLI entry point\n## Step 2: Add argument parsing\n`;
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("falls back to task when plan is empty", () => {
+    const units = parseImplementationPlan("", "do the thing");
+    expect(units).toEqual([{ id: "wu-1", description: "do the thing" }]);
   });
 });

@@ -66,7 +66,8 @@ describe("runAgentLoop", () => {
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
       { type: "PLAN_DONE", workUnits: wu, blueprintValidated: true },
-      { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT (wu-1)
+      { type: "IMPLEMENT_DONE" }, // PLAN → REPRODUCE
+      { type: "REPRODUCE_SKIP" }, // REPRODUCE → IMPLEMENT (wu-1)
       // wu-1
       { type: "IMPLEMENT_DONE" }, // IMPLEMENT → TEST
       { type: "TESTS_PASS" },     // TEST → REVIEW
@@ -88,7 +89,8 @@ describe("runAgentLoop", () => {
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
       { type: "PLAN_DONE", workUnits: [wu[0]], blueprintValidated: true },
-      { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT
+      { type: "IMPLEMENT_DONE" }, // PLAN → REPRODUCE
+      { type: "REPRODUCE_SKIP" }, // REPRODUCE → IMPLEMENT
       // wu-0: one repair
       { type: "IMPLEMENT_DONE" }, // → TEST
       { type: "TESTS_FAIL" },     // → REPAIR (repairCount=1)
@@ -113,7 +115,8 @@ describe("runAgentLoop", () => {
       { type: "CLARIFY_DONE" },
       { type: "DESIGN_DONE" },
       { type: "PLAN_DONE", workUnits: [wu[0]], blueprintValidated: true },
-      { type: "IMPLEMENT_DONE" }, // PLAN → IMPLEMENT
+      { type: "IMPLEMENT_DONE" }, // PLAN → REPRODUCE
+      { type: "REPRODUCE_SKIP" }, // REPRODUCE → IMPLEMENT
       { type: "IMPLEMENT_DONE" }, // IMPLEMENT → TEST
       { type: "TESTS_FAIL" },     // → REPAIR (count=1, limit=1 → next fail escalates)
       { type: "REPAIR_DONE" },    // → TEST
