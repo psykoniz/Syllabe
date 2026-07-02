@@ -508,10 +508,17 @@ export class ProjectRun implements AgentHandler {
 
   private async handleReproduce(ctx: RunContext): Promise<MachineEvent> {
     // Skip REPRODUCE when there is no existing repo — brand-new projects have no
-    // failing baseline to reproduce against. Similarly skip when the task is pure
-    // creation ("add a feature", "build X") rather than a bug fix.
+    // failing baseline to reproduce against — or when the task is pure creation
+    // ("add a feature", "build X"): a repro test only pays for itself when there
+    // is broken behaviour to pin down first.
     const hasExistingRepo = existsSync(join(this.cfg.workspace, ".git"));
-    if (!hasExistingRepo) return { type: "REPRODUCE_SKIP" };
+    if (!hasExistingRepo || !isBugFixTask(this.cfg.task)) {
+      this.traceSystem("REPRODUCE", {
+        decision: "skipped",
+        reason: hasExistingRepo ? "task is not a bug fix" : "no existing repo",
+      });
+      return { type: "REPRODUCE_SKIP" };
+    }
 
     const wu = ctx.workUnits[0];
     const codebase = this.framedRepoTree() ?? "";
@@ -965,6 +972,23 @@ export class ProjectRun implements AgentHandler {
       this.browserSession = null;
     }
   }
+}
+
+/** Classify a task as a bug fix (something is currently broken and can be
+ *  reproduced) vs pure creation (nothing to reproduce yet). SWE-bench issues
+ *  are overwhelmingly bug reports — they name broken behaviour explicitly.
+ *  Exported for unit testing. */
+export function isBugFixTask(task: string): boolean {
+  const t = task.toLowerCase();
+  const bugSignals =
+    /\b(bug|fix|fixes|broken|breaks?|crash(es|ed)?|error|exception|traceback|fail(s|ed|ing|ure)?|incorrect|wrong(ly)?|unexpected|regression|does not work|doesn't work|not working|should (not|be)|instead of)\b/;
+  const pureCreationSignals =
+    /^\s*(add|create|build|implement|write|set up|setup|generate|make)\b/;
+  if (bugSignals.test(t)) return true;
+  if (pureCreationSignals.test(t)) return false;
+  // Ambiguous — default to reproducing: a wasted repro attempt costs one cheap
+  // test-engineer call; a skipped repro on a real bug costs the whole run.
+  return true;
 }
 
 /** Parse work units from implementation-plan.md without an LLM call.

@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap } from "./repo-context";
-import { parseImplementationPlan } from "./project-run";
+import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
+import { parseImplementationPlan, isBugFixTask } from "./project-run";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -196,5 +196,83 @@ describe("parseImplementationPlan", () => {
   it("falls back to task when plan is empty", () => {
     const units = parseImplementationPlan("", "do the thing");
     expect(units).toEqual([{ id: "wu-1", description: "do the thing" }]);
+  });
+});
+
+describe("import graph + PageRank ranking", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "rank-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it("extractImports handles JS/TS and Python", () => {
+    expect(extractImports("a.ts", `import { x } from "./util";\nconst y = require("../lib/y");`))
+      .toEqual(["./util", "../lib/y"]);
+    expect(extractImports("a.py", `from astropy.modeling import core\nimport numpy`))
+      .toEqual(["astropy.modeling", "numpy"]);
+  });
+
+  it("resolveImport maps relative and dotted specifiers to repo files", () => {
+    const files = new Set(["src/util.ts", "astropy/modeling/core.py", "pkg/__init__.py"]);
+    expect(resolveImport("./util", "src/main.ts", files)).toBe("src/util.ts");
+    expect(resolveImport("astropy.modeling.core", "x.py", files)).toBe("astropy/modeling/core.py");
+    expect(resolveImport("pkg", "x.py", files)).toBe("pkg/__init__.py");
+    expect(resolveImport("numpy", "x.py", files)).toBeNull();
+    expect(resolveImport("@scope/pkg", "src/main.ts", files)).toBeNull();
+  });
+
+  it("rankRepoFiles surfaces graph neighbours of the seed files", () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    // seed.ts imports helper.ts; unrelated.ts is disconnected
+    writeFileSync(join(dir, "src", "seed.ts"), `import { h } from "./helper";\nexport function widget() {}`);
+    writeFileSync(join(dir, "src", "helper.ts"), `export function h() {}`);
+    writeFileSync(join(dir, "src", "unrelated.ts"), `export function nothing() {}`);
+    const ranked = rankRepoFiles(dir, ["src/seed.ts"], 10);
+    expect(ranked[0]).toBe("src/seed.ts");
+    expect(ranked).toContain("src/helper.ts");
+    // helper (connected to the seed) must outrank unrelated (disconnected)
+    expect(ranked.indexOf("src/helper.ts")).toBeLessThan(
+      ranked.includes("src/unrelated.ts") ? ranked.indexOf("src/unrelated.ts") : Infinity
+    );
+  });
+
+  it("pageRank concentrates mass on seeds and their neighbours", () => {
+    const files = ["a", "b", "c"];
+    const edges = new Map([["a", new Set(["b"])]]);
+    const rank = pageRank(files, edges, ["a"]);
+    expect(rank.get("a")! + rank.get("b")!).toBeGreaterThan(rank.get("c")!);
+  });
+});
+
+describe("isBugFixTask", () => {
+  it("detects bug reports", () => {
+    expect(isBugFixTask("separability_matrix does not compute separability correctly for nested CompoundModels")).toBe(true);
+    expect(isBugFixTask("Fix the crash when parsing empty config")).toBe(true);
+    expect(isBugFixTask("TypeError raised instead of ValueError")).toBe(true);
+  });
+
+  it("detects pure creation tasks", () => {
+    expect(isBugFixTask("Add a --version flag to the CLI")).toBe(false);
+    expect(isBugFixTask("Create a REST API for user management")).toBe(false);
+  });
+
+  it("defaults ambiguous tasks to reproduce", () => {
+    expect(isBugFixTask("The parser needs updating for the new format")).toBe(true);
+  });
+});
+
+describe("extractSignatures — bare class methods", () => {
+  it("captures unmodified TS class methods and skips control flow", () => {
+    const src = [
+      "class Runner {",
+      "  run(command: string): BashResult {",
+      "    if (foo) {",
+      "      while (bar) {",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+    const sigs = extractSignatures("runner.ts", src);
+    expect(sigs.some((s) => s.includes("run(command"))).toBe(true);
+    expect(sigs.some((s) => s.startsWith("if") || s.startsWith("while"))).toBe(false);
   });
 });
