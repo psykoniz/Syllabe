@@ -28,9 +28,10 @@ function scrubEnv(extra: Record<string, string> = {}): Record<string, string> {
 export class BashTool {
   constructor(private opts: BashOptions) {}
 
-  run(command: string): BashResult {
+  run(command: string, timeoutMs?: number): BashResult {
     const start = Date.now();
     const env = scrubEnv(this.opts.extraEnv);
+    const effectiveTimeout = timeoutMs ?? this.opts.timeoutMs ?? 30_000;
 
     let shellPath = "bash";
     if (process.platform === "win32") {
@@ -43,7 +44,7 @@ export class BashTool {
     const proc = spawnSync(shellPath, ["-c", command], {
       cwd: this.opts.workspace,
       env,
-      timeout: this.opts.timeoutMs ?? 30_000,
+      timeout: effectiveTimeout,
       encoding: "utf8",
     });
 

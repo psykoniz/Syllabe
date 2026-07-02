@@ -334,6 +334,25 @@ function compactMessage(msg: MessageParam): MessageParam {
   return { ...msg, content };
 }
 
+/** Fast char-count estimate: avoids a full JSON.stringify(messages) on every
+ *  compaction check — that call is O(n) per turn, costing O(n²) per run on
+ *  long conversations. We still re-serialize in tests for exact assertions. */
+export function estimateMessagesChars(messages: MessageParam[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (typeof m.content === "string") {
+      total += m.content.length + 20; // role + punctuation overhead
+    } else {
+      for (const b of m.content) {
+        if (b.type === "text") total += b.text.length + 15;
+        else if (b.type === "tool_result") total += b.content.length + 30;
+        else if (b.type === "tool_use") total += JSON.stringify(b.input).length + 40;
+      }
+    }
+  }
+  return total;
+}
+
 /** If the serialized history exceeds maxChars, shrink older messages:
  *  - messages[0] (the task) stays intact
  *  - the last keepLastTurns*2 messages stay intact
@@ -343,7 +362,7 @@ export function compactMessages(
   messages: MessageParam[],
   opts: CompactionOptions
 ): MessageParam[] {
-  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  if (estimateMessagesChars(messages) <= opts.maxChars) return messages;
   const keepTail = opts.keepLastTurns * 2;
   const tailStart = Math.max(1, messages.length - keepTail);
   return messages.map((msg, i) =>
@@ -359,7 +378,7 @@ export async function compactMessagesSmart(
   messages: MessageParam[],
   opts: CompactionOptions
 ): Promise<MessageParam[]> {
-  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  if (estimateMessagesChars(messages) <= opts.maxChars) return messages;
   if (!opts.summarizeFn) return compactMessages(messages, opts);
 
   const keepTail = opts.keepLastTurns * 2;
@@ -548,9 +567,15 @@ export async function runAgent(
     const latestText = textOf(response.content);
     if (latestText) finalText = latestText;
 
+    // Run all tool calls concurrently — read-only calls (read_file, glob_files,
+    // grep_files, git_status, git_diff) are embarrassingly parallel; write calls
+    // are typically alone in a turn so there is no practical conflict risk.
+    const settled = await Promise.all(toolUses.map((block) => executeToolUse(block, opts)));
+
     const results: ToolResultBlock[] = [];
-    for (const block of toolUses) {
-      const result = await executeToolUse(block, opts);
+    for (let i = 0; i < toolUses.length; i++) {
+      const block = toolUses[i];
+      const result = settled[i];
       const sig = `${block.name}:${JSON.stringify(block.input)}`;
       if (result.is_error) {
         const n = (failureCounts.get(sig) ?? 0) + 1;

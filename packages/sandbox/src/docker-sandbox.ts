@@ -50,7 +50,7 @@ export class DockerSandbox {
     this.exec = opts.exec ?? (spawnSync as unknown as ExecFn);
   }
 
-  run(command: string): SandboxResult {
+  run(command: string, timeoutMs?: number): SandboxResult {
     const start = Date.now();
 
     const dockerArgs = [
@@ -70,7 +70,7 @@ export class DockerSandbox {
     ];
 
     const proc = this.exec("docker", dockerArgs, {
-      timeout: this.opts.timeoutMs,
+      timeout: timeoutMs ?? this.opts.timeoutMs,
       encoding: "utf8",
     });
 

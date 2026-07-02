@@ -15,7 +15,7 @@ export interface ToolDef {
 
 /** Anything that can execute a shell command — BashTool or a sandboxed runner */
 export interface BashRunner {
-  run(command: string): { stdout: string; stderr: string; exitCode: number };
+  run(command: string, timeoutMs?: number): { stdout: string; stderr: string; exitCode: number };
   getEnv(): Record<string, string>;
 }
 
@@ -105,11 +105,18 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: "bash",
-    description: "Execute a bash command in the workspace directory (30s timeout).",
+    description:
+      "Execute a bash command in the workspace directory. Default timeout 30s; pass timeout_s " +
+      "to override (max 300). Long-running steps (build, test suites) should set timeout_s " +
+      "explicitly. A [timed out] message is appended when the limit is hit — it is NOT a test failure.",
     input_schema: {
       type: "object",
       properties: {
         command: { type: "string", description: "Shell command to run" },
+        timeout_s: {
+          type: "number",
+          description: "Per-call timeout in seconds (1–300, default 30)",
+        },
       },
       required: ["command"],
     },
@@ -218,11 +225,20 @@ export function dispatchTool(
       }
 
       case "bash": {
-        const r = ctx.bash.run(input.command as string);
+        const rawTimeout = input.timeout_s as number | undefined;
+        const cappedTimeoutMs = rawTimeout
+          ? Math.min(Math.max(rawTimeout, 1), 300) * 1000
+          : undefined;
+        const r = ctx.bash.run(input.command as string, cappedTimeoutMs);
+        const timedOut =
+          (r.exitCode !== 0 && r.stderr === "" && r.stdout === "") ||
+          r.stderr?.includes("ETIMEDOUT") ||
+          false;
         const out = [
           r.stdout,
           r.stderr ? `[stderr] ${r.stderr}` : "",
           r.exitCode !== 0 ? `[exit ${r.exitCode}]` : "",
+          timedOut ? `[timed out after ${rawTimeout ?? 30}s — this is NOT a test failure; retry with a longer timeout_s or simplify the command]` : "",
         ]
           .filter(Boolean)
           .join("\n");

@@ -93,6 +93,19 @@ const EXISTING_REPO_INSTRUCTION =
   "This is an existing repository — locate the right files with the file tree above and " +
   "modify in place; run the project's own test command.";
 
+/** Per-role token ceiling per turn. Architect and implementer need long context
+ *  windows for multi-file diffs and blueprints; simpler roles cap lower to
+ *  reduce cost and output sprawl. */
+const ROLE_MAX_TOKENS: Record<Role, number> = {
+  "architect":          16384,
+  "implementer":        16384,
+  "reviewer":           8192,
+  "product-strategist": 4096,
+  "test-engineer":      8192,
+  "memory-curator":     2048,
+  "harness-optimizer":  4096,
+};
+
 /** Reasoning effort per role: high for design, review, clarify and implementation
  *  (the implementer writes the scored patch); low for testing, memory-curating and
  *  harness optimizing. */
@@ -854,6 +867,7 @@ export class ProjectRun implements AgentHandler {
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
         effort: ROLE_EFFORT[role],
+        maxTokensPerTurn: ROLE_MAX_TOKENS[role],
         extraDispatcher,
       }
     );
