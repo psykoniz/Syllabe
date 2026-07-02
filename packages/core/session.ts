@@ -10,6 +10,7 @@ import { setHarnessApiKey } from "@projectos/policy";
 import type { ApprovalHandler } from "@projectos/policy";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, MessageParam, AgentRunResult } from "./agent-runner";
+import { proxyFetch } from "./proxy-fetch";
 import { buildSystemPrompt } from "./system-prompt";
 import type { SystemPromptOptions } from "./system-prompt";
 import {
@@ -91,7 +92,8 @@ export async function defaultCreateMessage(): Promise<CreateMessageFn> {
   }
 
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic();
+  // Pass proxy-aware fetch so Bun routes through HTTPS_PROXY when set.
+  const client = new Anthropic({ fetch: proxyFetch as typeof globalThis.fetch });
   return async (params) => {
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {

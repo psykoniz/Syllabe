@@ -6,6 +6,7 @@
  * Env: OPENAI_API_KEY (required), OPENAI_BASE_URL (default api.openai.com).
  * Select with PROJECTOS_PROVIDER=openai or createMessage injection.
  */
+import { proxyFetch } from "./proxy-fetch";
 import type {
   CreateMessageFn,
   CreateMessageParams,
@@ -194,7 +195,8 @@ export function openAiCreateMessage(opts: OpenAiAdapterOptions = {}): CreateMess
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
   const baseUrl = (opts.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com")
     .replace(/\/$/, "");
-  const doFetch = opts.fetchFn ?? fetch;
+  // Use proxy-aware fetch by default so Bun respects HTTPS_PROXY.
+  const doFetch = opts.fetchFn ?? proxyFetch;
   const maxRetries = opts.maxRetries ?? 5;
   if (!apiKey) throw new Error("openAiCreateMessage: OPENAI_API_KEY is not set");
 
