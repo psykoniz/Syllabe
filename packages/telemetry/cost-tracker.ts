@@ -1,4 +1,7 @@
-const PRICE_PER_MILLION: Record<string, { input: number; output: number }> = {
+/** Per-million-token USD prices, keyed by model id. Single source of truth —
+ *  the web server and any other cost display MUST import this instead of
+ *  duplicating the table (drift here silently under-reports run cost). */
+export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
   "claude-fable-5":      { input: 10.0,  output: 50.0  },
   "claude-opus-4-8":     { input: 5.0,   output: 25.0  },
   "claude-sonnet-4-6":   { input: 3.0,   output: 15.0  },
@@ -8,6 +11,14 @@ const PRICE_PER_MILLION: Record<string, { input: number; output: number }> = {
   "gpt-4o":              { input: 2.5,   output: 10.0  },
   "gpt-4o-mini":         { input: 0.15,  output: 0.6   },
 };
+
+/** Look up a model's price, falling back to zero for unknown ids. */
+export function priceFor(model: string): { input: number; output: number } {
+  return MODEL_PRICES[model] ?? { input: 0, output: 0 };
+}
+
+/** Back-compat alias for the internal name used below. */
+const PRICE_PER_MILLION = MODEL_PRICES;
 
 // Anthropic prompt caching multipliers (relative to input price):
 // cache read ≈ 0.1×, cache write (5-min TTL) ≈ 1.25×.
