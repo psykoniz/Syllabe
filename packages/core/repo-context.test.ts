@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
-import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff } from "./project-run";
+import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff, escalationLesson } from "./project-run";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -308,5 +308,25 @@ describe("capHandoff", () => {
     const out = capHandoff("x".repeat(5000));
     expect(out.length).toBeLessThan(2500);
     expect(out).toContain("[... handoff truncated ...]");
+  });
+});
+
+describe("escalationLesson", () => {
+  it("builds a zero-LLM lesson from the escalation reason", () => {
+    const l = escalationLesson(
+      "Add a stats command to the CLI",
+      "run-123",
+      "max review cycles (2) exceeded",
+      "ESCALATED"
+    );
+    expect(l.approved).toBe(true);
+    expect(l.trigger).toContain("stats");
+    expect(l.content).toContain("max review cycles");
+    expect(l.runId).toBe("run-123");
+  });
+
+  it("falls back to a generic trigger for short tasks", () => {
+    const l = escalationLesson("fix it", "r", "reason", "ESCALATED");
+    expect(l.trigger.length).toBeGreaterThan(0);
   });
 });

@@ -93,6 +93,32 @@ export function capHandoff(text: string, maxChars = 2400): string {
   return t.length <= maxChars ? t : t.slice(0, maxChars) + "\n[... handoff truncated ...]";
 }
 
+/** Build a lesson from an escalated run WITHOUT any LLM call — the reason and
+ *  state are already known deterministically. Costs zero tokens now, and the
+ *  next run on the same project sees it in its memory block (e.g. "previous
+ *  run burned its budget in review cycles" steers the architect to smaller
+ *  work units). Exported for unit testing. */
+export function escalationLesson(
+  task: string,
+  runId: string,
+  reason: string,
+  state: string
+): Lesson {
+  const trigger = task
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 3)
+    .slice(0, 3)
+    .join(" ");
+  return {
+    trigger: trigger || "escalation",
+    content: `A previous run on this task escalated at ${state}: ${reason.slice(0, 300)}. ` +
+      `Structure the work to avoid repeating this failure.`,
+    runId,
+    approved: true,
+  };
+}
+
 /** Parse a VERDICT from agent output. Tries the strict `VERDICT: X` form
  *  first, then falls back to a bare keyword scan of the final 500 chars
  *  ("the tests pass, so my verdict is APPROVE" must not read as a rejection).
@@ -668,7 +694,12 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
-    const result = await this.callAgent("implementer", prompt);
+    // After a review rejection the redo must be smarter, not just retried:
+    // it now has the reviewer's objections AND deepest reasoning. Normal
+    // first-pass implements stay at the default effort.
+    const result = await this.callAgent("implementer", prompt, {
+      effort: ctx.reviewCycleCount >= 1 ? "max" : undefined,
+    });
     this.handoff = { from: "IMPLEMENT", content: capHandoff(result.finalText) };
     return { type: "IMPLEMENT_DONE" };
   }
@@ -754,7 +785,12 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
-    const result = await this.callAgent("implementer", prompt);
+    // Adaptive escalation: the first repair runs at the role's default effort;
+    // a second failure has PROVEN the bug is hard, so pay for deepest reasoning
+    // only then. Cheaper than a third blind attempt at normal effort.
+    const result = await this.callAgent("implementer", prompt, {
+      effort: ctx.repairCount >= 2 ? "max" : undefined,
+    });
     this.handoff = { from: "REPAIR", content: capHandoff(result.finalText) };
     return { type: "REPAIR_DONE" };
   }
@@ -807,7 +843,9 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    // Writing a README from a provided diff needs no deep reasoning — "low"
+    // saves thinking tokens on every single run.
+    await this.callAgent("implementer", prompt, { effort: "low" });
     return { type: "DOCUMENT_DONE" };
   }
 
@@ -946,7 +984,7 @@ export class ProjectRun implements AgentHandler {
     return this.memoryBlock;
   }
 
-  private async callAgent(role: Role, prompt: string) {
+  private async callAgent(role: Role, prompt: string, opts: { effort?: EffortLevel } = {}) {
     // modelOverride exists to substitute unavailable premium models (fable);
     // it must never upgrade the cost of roles already on a cheaper tier (haiku).
     // With a non-Anthropic provider, the router's claude-* ids don't exist —
@@ -1023,7 +1061,7 @@ export class ProjectRun implements AgentHandler {
         tools: extraTools.length > 0 ? [...TOOL_DEFINITIONS, ...extraTools] : undefined,
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
-        effort: ROLE_EFFORT[role],
+        effort: opts.effort ?? ROLE_EFFORT[role],
         maxTokensPerTurn: ROLE_MAX_TOKENS[role],
         extraDispatcher,
       }
@@ -1063,7 +1101,7 @@ export class ProjectRun implements AgentHandler {
     this.setupRepo();
     const ctx = makeContext([], this.cfg.loopBounds);
     try {
-      return await runAgentLoop(ctx, {
+      const result = await runAgentLoop(ctx, {
         runId: this.cfg.runId,
         db: this.cfg.db,
         handler: this,
@@ -1080,6 +1118,28 @@ export class ProjectRun implements AgentHandler {
             }
           : {}),
       });
+
+      // Escalated runs are the most informative ones — record WHY, at zero
+      // token cost, so the next run on this project starts warned.
+      if (result.finalContext.state === "ESCALATED" && result.finalContext.escalationReason) {
+        try {
+          const globalMem = new GlobalMemory({ project: projectKeyFor(this.cfg.workspace) });
+          globalMem.appendLesson(
+            escalationLesson(
+              this.cfg.task,
+              this.cfg.runId,
+              result.finalContext.escalationReason,
+              // last checkpoint before ESCALATED is the state that failed
+              "ESCALATED"
+            ),
+            "project"
+          );
+        } catch {
+          // memory is best-effort
+        }
+      }
+
+      return result;
     } finally {
       await this.browserSession?.close();
       this.browserSession = null;
