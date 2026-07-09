@@ -78,6 +78,38 @@ export interface ProjectRunConfig {
    *  default, ~$0.0002/transition). Corrections are injected as steering
    *  messages consumed by the next state's prompt. */
   autoSteering?: boolean;
+  /** Hard cap on total tokens for the run (default 3M). A run that blows past
+   *  this is stuck in a loop — escalating early with a clear reason costs 10×
+   *  less than letting review/repair cycles burn until their iteration caps. */
+  tokenBudget?: number;
+}
+
+/** Default per-run token budget (~$15-30 depending on model). */
+const DEFAULT_TOKEN_BUDGET = 3_000_000;
+
+/** Cap an inter-state handoff at ~600 tokens so it informs without bloating. */
+export function capHandoff(text: string, maxChars = 2400): string {
+  const t = text.trim();
+  return t.length <= maxChars ? t : t.slice(0, maxChars) + "\n[... handoff truncated ...]";
+}
+
+/** Parse a VERDICT from agent output. Tries the strict `VERDICT: X` form
+ *  first, then falls back to a bare keyword scan of the final 500 chars
+ *  ("the tests pass, so my verdict is APPROVE" must not read as a rejection).
+ *  Returns null when neither keyword appears — the caller decides the default. */
+export function parseVerdict(text: string, positive: string, negative: string): boolean | null {
+  const strict = new RegExp(`VERDICT:\\s*(${positive}|${negative.replace("_", "[_ ]")})`, "i").exec(text);
+  if (strict) {
+    return strict[1].toUpperCase().replace(" ", "_") === positive.toUpperCase();
+  }
+  const tail = text.slice(-500).toUpperCase();
+  const posIdx = tail.lastIndexOf(positive.toUpperCase());
+  const negIdx = Math.max(
+    tail.lastIndexOf(negative.toUpperCase()),
+    tail.lastIndexOf(negative.toUpperCase().replace("_", " "))
+  );
+  if (posIdx === -1 && negIdx === -1) return null;
+  return posIdx > negIdx;
 }
 
 /** Framing prepended to the repo context so it never expands the task scope. */
@@ -145,6 +177,12 @@ export class ProjectRun implements AgentHandler {
   private lastTestFailures: TestFailure[] = [];
   /** Final text of the most recent agent call, fed to the auto-steering critic. */
   private lastAgentText = "";
+  /** Inter-state handoff: what the previous state concluded, injected into the
+   *  next state's prompt so cycles carry their WHY (a rejected review otherwise
+   *  re-prompts IMPLEMENT with zero memory of what the reviewer objected to). */
+  private handoff: { from: State; content: string } | null = null;
+  /** Cumulative token spend across every agent call in this run. */
+  private totalTokens = 0;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -267,9 +305,54 @@ export class ProjectRun implements AgentHandler {
     return sections.length > 0 ? sections.join("\n\n") : null;
   }
 
+  /** Full diff of the run's changes (committed + working tree), for REVIEW.
+   *  Reviewing without the diff forces the reviewer to rediscover the changes
+   *  with glob/read calls — slower, costlier, and it misses deletions. */
+  private workspaceDiff(cap = 8000): string | null {
+    try {
+      let base: string | null = null;
+      const repoJson = join(this.agentDir, "repo.json");
+      if (existsSync(repoJson)) {
+        base = (JSON.parse(readFileSync(repoJson, "utf8")) as { base_sha?: string }).base_sha ?? null;
+      }
+      const args = base ? ["diff", base] : ["diff", "HEAD"];
+      const r = spawnSync("git", args, {
+        cwd: this.cfg.workspace, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+      });
+      if (r.status !== 0) return null;
+      let d = (r.stdout ?? "").trim();
+      if (!d) return null;
+      if (d.length > cap) d = d.slice(0, cap) + "\n[... diff truncated — use git_diff for the rest ...]";
+      return "### Diff of all changes in this run\n```diff\n" + d + "\n```";
+    } catch {
+      return null;
+    }
+  }
+
+  /** Render the pending handoff as a prompt section, or null. */
+  private handoffBlock(...accept: State[]): string | null {
+    if (!this.handoff || !accept.includes(this.handoff.from)) return null;
+    const label = this.handoff.from === "REVIEW"
+      ? "Reviewer feedback from the REJECTED review — fix ALL of these points"
+      : `Summary from the previous ${this.handoff.from} state`;
+    return `### ${label}\n${this.handoff.content}`;
+  }
+
   // ─── AgentHandler ──────────────────────────────────────────────────────────
 
   async onState(state: State, ctx: RunContext): Promise<MachineEvent> {
+    // Hard token budget: a run past this ceiling is looping, not progressing.
+    // Let the cheap finishing states (DOCUMENT/LEARN) complete regardless so a
+    // budget hit during review cycles still produces artifacts and lessons.
+    const budget = this.cfg.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
+    if (this.totalTokens > budget && !["DOCUMENT", "LEARN"].includes(state)) {
+      return {
+        type: "ESCALATE",
+        reason: `token budget exceeded (${this.totalTokens.toLocaleString()}/${budget.toLocaleString()} tokens) at ${state} — ` +
+          `the run was likely stuck in a loop; see the trace timeline for where the spend concentrated`,
+      };
+    }
+
     switch (state) {
       case "INTAKE":     return this.handleIntake();
       case "CLARIFY":    return this.handleClarify();
@@ -473,7 +556,7 @@ export class ProjectRun implements AgentHandler {
           ],
         });
         const result = await this.callAgent("test-engineer", prompt);
-        return { passed: /VERDICT:\s*PASS/i.test(result.finalText) };
+        return { passed: parseVerdict(result.finalText, "PASS", "FAIL") === true };
       },
       repair: async (wu, attempt) => {
         const prompt = buildStatePrompt("REPAIR", task, {
@@ -500,7 +583,7 @@ export class ProjectRun implements AgentHandler {
           ],
         });
         const result = await this.callAgent("reviewer", prompt);
-        const approved = /VERDICT:\s*APPROVE/i.test(result.finalText);
+        const approved = parseVerdict(result.finalText, "APPROVE", "MUST_FIX") === true;
         return { approved, mustFix: approved ? [] : [result.finalText.slice(0, 500)] };
       },
     };
@@ -563,11 +646,20 @@ export class ProjectRun implements AgentHandler {
     // instead of burning turns on read_file or failing edit_file on unseen code.
     const codebase = this.framedRepoContext() ?? this.framedRepoTree();
 
+    // A rejected review re-enters IMPLEMENT: without the reviewer's objections
+    // in the prompt, the implementer redoes the same work and the cycle spins
+    // until maxReview escalates (the 4.2M-token / $43 failure mode).
+    const reviewFeedback = this.handoffBlock("REVIEW");
+
     const prompt = buildStatePrompt("IMPLEMENT", this.cfg.task, {
-      context: [blueprint, codebase].filter(Boolean).join("\n\n") || undefined,
+      context: [reviewFeedback, blueprint, codebase].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit ${ctx.workUnitIndex + 1}/${ctx.workUnits.length}: **${wu.description}**`,
         "",
+        ...(reviewFeedback
+          ? ["A reviewer REJECTED the previous attempt — address every point in the",
+             "reviewer feedback above before anything else.", ""]
+          : []),
         "Implement this work unit completely:",
         "- Write all necessary source files using write_file",
         "- Follow the architecture and implementation plan included above",
@@ -576,7 +668,8 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    const result = await this.callAgent("implementer", prompt);
+    this.handoff = { from: "IMPLEMENT", content: capHandoff(result.finalText) };
     return { type: "IMPLEMENT_DONE" };
   }
 
@@ -592,6 +685,7 @@ export class ProjectRun implements AgentHandler {
     }
 
     const prompt = buildStatePrompt("TEST", this.cfg.task, {
+      context: this.handoffBlock("IMPLEMENT", "REPAIR") ?? undefined,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
         "",
@@ -602,7 +696,9 @@ export class ProjectRun implements AgentHandler {
     });
 
     const result = await this.callAgent("test-engineer", prompt);
-    const passed = /VERDICT:\s*PASS/i.test(result.finalText);
+    // Robust parsing: strict `VERDICT: PASS` first, then keyword fallback. A
+    // missed/false verdict is recovered below by the deterministic test run.
+    const passed = parseVerdict(result.finalText, "PASS", "FAIL") === true;
     if (passed) {
       this.lastTestFailures = [];
       return { type: "TESTS_PASS" };
@@ -658,19 +754,30 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    const result = await this.callAgent("implementer", prompt);
+    this.handoff = { from: "REPAIR", content: capHandoff(result.finalText) };
     return { type: "REPAIR_DONE" };
   }
 
   private async handleReview(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
 
+    // Give the reviewer the actual diff and the implementer's summary up front:
+    // judging blind forces it to rediscover the changes tool-call by tool-call,
+    // and it never sees deletions at all.
+    const diff = this.workspaceDiff();
+    const implSummary = this.handoffBlock("IMPLEMENT", "REPAIR");
+
     const prompt = buildStatePrompt("REVIEW", this.cfg.task, {
+      context: [implSummary, diff].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
         "",
         "Review the implementation:",
-        "- Use glob_files and read_file to inspect the code",
+        ...(diff
+          ? ["- The full diff of the run's changes is provided above — review it first",
+             "- Use read_file only where you need more context around a change"]
+          : ["- Use glob_files and read_file to inspect the code"]),
         "- Run `bun test` to confirm tests pass",
         "- Reply with VERDICT: APPROVE if the work is acceptable",
         "- Reply with VERDICT: MUST_FIX and list issues if it needs rework",
@@ -678,14 +785,19 @@ export class ProjectRun implements AgentHandler {
     });
 
     const result = await this.callAgent("reviewer", prompt);
-    const approved = /VERDICT:\s*APPROVE/i.test(result.finalText);
-    return approved
-      ? { type: "REVIEW_APPROVE", verdictProvided: true }
-      : { type: "REVIEW_MUST_FIX" };
+    const approved = parseVerdict(result.finalText, "APPROVE", "MUST_FIX") === true;
+    if (approved) {
+      this.handoff = null;
+      return { type: "REVIEW_APPROVE", verdictProvided: true };
+    }
+    // Carry the reviewer's objections into the next IMPLEMENT prompt.
+    this.handoff = { from: "REVIEW", content: capHandoff(result.finalText) };
+    return { type: "REVIEW_MUST_FIX" };
   }
 
   private async handleDocument(): Promise<MachineEvent> {
     const prompt = buildStatePrompt("DOCUMENT", this.cfg.task, {
+      context: this.workspaceDiff(4000) ?? undefined,
       instructions: [
         "Write a README.md in the workspace root covering:",
         "- What was built and why",
@@ -931,6 +1043,7 @@ export class ProjectRun implements AgentHandler {
     });
 
     this.lastAgentText = result.finalText;
+    this.totalTokens += result.usage.inputTokens + result.usage.outputTokens;
     return result;
   }
 

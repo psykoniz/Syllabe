@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
-import { parseImplementationPlan, isBugFixTask } from "./project-run";
+import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff } from "./project-run";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -274,5 +274,39 @@ describe("extractSignatures — bare class methods", () => {
     const sigs = extractSignatures("runner.ts", src);
     expect(sigs.some((s) => s.includes("run(command"))).toBe(true);
     expect(sigs.some((s) => s.startsWith("if") || s.startsWith("while"))).toBe(false);
+  });
+});
+
+describe("parseVerdict", () => {
+  it("parses strict VERDICT lines", () => {
+    expect(parseVerdict("done.\nVERDICT: PASS", "PASS", "FAIL")).toBe(true);
+    expect(parseVerdict("VERDICT: FAIL — two tests red", "PASS", "FAIL")).toBe(false);
+    expect(parseVerdict("VERDICT: MUST_FIX\n- issue", "APPROVE", "MUST_FIX")).toBe(false);
+    expect(parseVerdict("VERDICT: MUST FIX (spaces)", "APPROVE", "MUST_FIX")).toBe(false);
+  });
+
+  it("falls back to keyword scan when the strict form is missing", () => {
+    expect(parseVerdict("All 12 tests pass, so I consider this a PASS.", "PASS", "FAIL")).toBe(true);
+    expect(parseVerdict("Given the issues above I must say: MUST FIX", "APPROVE", "MUST_FIX")).toBe(false);
+    expect(parseVerdict("Everything looks good — APPROVE", "APPROVE", "MUST_FIX")).toBe(true);
+  });
+
+  it("returns null when no keyword appears", () => {
+    expect(parseVerdict("I wrote some tests.", "PASS", "FAIL")).toBeNull();
+  });
+
+  it("uses the LAST keyword when both appear", () => {
+    expect(parseVerdict("Earlier attempts would FAIL but now: PASS", "PASS", "FAIL")).toBe(true);
+  });
+});
+
+describe("capHandoff", () => {
+  it("passes short text through trimmed", () => {
+    expect(capHandoff("  summary  ")).toBe("summary");
+  });
+  it("truncates long text with a marker", () => {
+    const out = capHandoff("x".repeat(5000));
+    expect(out.length).toBeLessThan(2500);
+    expect(out).toContain("[... handoff truncated ...]");
   });
 });
