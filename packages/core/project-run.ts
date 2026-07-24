@@ -35,6 +35,7 @@ import {
   changedFileStats,
   buildRepairDiagnostic,
   buildStructuredDiagnostic,
+  detectTestCommand,
 } from "./workspace-runner";
 import type { TestFailure } from "./workspace-runner";
 import { spawnSync } from "child_process";
@@ -598,7 +599,7 @@ export class ProjectRun implements AgentHandler {
           instructions: [
             `Work unit: **${wu.description}**`,
             "",
-            "Write tests using bun:test for THIS unit's files and run them with `bun test <file>`.",
+            `Write tests with this project's framework (${detectTestCommand(this.cfg.workspace).framework}) for THIS unit's files and run \`${detectTestCommand(this.cfg.workspace).display}\`.`,
             "- If tests pass, reply with VERDICT: PASS",
             "- If tests fail and you cannot fix them in one attempt, reply with VERDICT: FAIL",
           ],
@@ -611,7 +612,7 @@ export class ProjectRun implements AgentHandler {
           instructions: [
             `Work unit: **${wu.description}** — repair attempt ${attempt}`,
             "",
-            "Run this unit's tests with `bun test <file>` to see the failures.",
+            `Run this unit's tests with \`${detectTestCommand(this.cfg.workspace).display}\` to see the failures.`,
             "Fix the source code (not the tests) to make them pass.",
             "Confirm with another test run.",
           ],
@@ -737,12 +738,17 @@ export class ProjectRun implements AgentHandler {
       this.traceSystem("TEST", { install: install.detail, ok: install.ok });
     }
 
+    // Use the project's OWN test tooling. Telling the agent to run `bun test`
+    // on a Python repo guarantees failure and burns the repair budget.
+    const tc = detectTestCommand(this.cfg.workspace);
+
     const prompt = buildStatePrompt("TEST", this.cfg.task, {
       context: this.handoffBlock("IMPLEMENT", "REPAIR") ?? undefined,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
         "",
-        "Write tests using bun:test and run them with `bun test`.",
+        `This project's test framework is ${tc.framework}. Write tests with it and run \`${tc.display}\`.`,
+        "Prefer running only the tests covering your change — the full suite may be slow.",
         "- If tests pass, reply with VERDICT: PASS",
         "- If tests fail and you cannot fix them in one attempt, reply with VERDICT: FAIL",
       ],
@@ -764,6 +770,13 @@ export class ProjectRun implements AgentHandler {
     const testRun = runWorkspaceTests(this.cfg.workspace);
     if (testRun.exitCode === 0) {
       // Tests actually pass — the agent's verdict was wrong.
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+    // The runner itself could not start (missing interpreter/toolchain). No
+    // amount of source repair fixes that, so do not spend the REPAIR budget.
+    if (testRun.unavailable) {
+      this.traceSystem("TEST", { decision: "test runner unavailable — skipping repair", output: testRun.output });
       this.lastTestFailures = [];
       return { type: "TESTS_PASS" };
     }
@@ -803,7 +816,7 @@ export class ProjectRun implements AgentHandler {
         "The test failures are provided as structured JSON in the context above.",
         "Each failure includes the file, line, error message, and surrounding code.",
         "Fix ONLY the source code files listed in changedFiles — never modify test files.",
-        "After fixing, run `bun test` on the affected files to confirm.",
+        `After fixing, run \`${detectTestCommand(this.cfg.workspace).display}\` on the affected tests to confirm.`,
       ],
     });
 
@@ -836,7 +849,7 @@ export class ProjectRun implements AgentHandler {
           ? ["- The full diff of the run's changes is provided above — review it first",
              "- Use read_file only where you need more context around a change"]
           : ["- Use glob_files and read_file to inspect the code"]),
-        "- Run `bun test` to confirm tests pass",
+        `- Run \`${detectTestCommand(this.cfg.workspace).display}\` to confirm tests pass`,
         "- Reply with VERDICT: APPROVE if the work is acceptable",
         "- Reply with VERDICT: MUST_FIX and list issues if it needs rework",
       ],
@@ -860,7 +873,7 @@ export class ProjectRun implements AgentHandler {
         "Write a README.md in the workspace root covering:",
         "- What was built and why",
         "- How to run it (`bun run ...`)",
-        "- How to run the tests (`bun test`)",
+        `- How to run the tests (\`${detectTestCommand(this.cfg.workspace).display}\`)`,
         "Then git commit all remaining uncommitted files.",
       ],
     });

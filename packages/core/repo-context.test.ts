@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
 import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff, escalationLesson } from "./project-run";
+import { detectTestCommand } from "./workspace-runner";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -328,5 +329,33 @@ describe("escalationLesson", () => {
   it("falls back to a generic trigger for short tasks", () => {
     const l = escalationLesson("fix it", "r", "reason", "ESCALATED");
     expect(l.trigger.length).toBeGreaterThan(0);
+  });
+});
+
+describe("detectTestCommand", () => {
+  const mk = (files: string[]) => {
+    const d = mkdtempSync(join(tmpdir(), "tc-"));
+    for (const f of files) writeFileSync(join(d, f), "");
+    return d;
+  };
+
+  it("detects pytest for Python repos (SWE-bench is all Python)", () => {
+    expect(detectTestCommand(mk(["pyproject.toml"])).framework).toBe("pytest");
+    expect(detectTestCommand(mk(["setup.py"])).display).toBe("python -m pytest");
+    expect(detectTestCommand(mk(["tox.ini"])).framework).toBe("pytest");
+  });
+
+  it("detects go, rust and JS toolchains", () => {
+    expect(detectTestCommand(mk(["go.mod"])).display).toBe("go test ./...");
+    expect(detectTestCommand(mk(["Cargo.toml"])).display).toBe("cargo test");
+    expect(detectTestCommand(mk(["package.json"])).framework).toBe("bun:test");
+  });
+
+  it("falls back to bun test when nothing matches", () => {
+    expect(detectTestCommand(mk(["README.md"])).display).toBe("bun test");
+  });
+
+  it("prefers Python over a stray package.json (Python repos often ship one)", () => {
+    expect(detectTestCommand(mk(["pyproject.toml", "package.json"])).framework).toBe("pytest");
   });
 });

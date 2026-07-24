@@ -52,18 +52,67 @@ export function ensureNodeModules(workspace: string): InstallResult {
 export interface TestRunResult {
   exitCode: number;
   output: string;
+  /** True when the runner itself could not be executed (interpreter missing).
+   *  Distinct from "tests failed" — repairing source code cannot fix it. */
+  unavailable?: boolean;
 }
 
-/** Run `bun test` in the workspace and capture combined output. */
+export interface TestCommand {
+  cmd: string;
+  args: string[];
+  /** How to write the command in a prompt, e.g. "python -m pytest" */
+  display: string;
+  /** Framework name for "write tests using X" instructions */
+  framework: string;
+}
+
+/** Detect the project's real test command from its manifest files.
+ *  Hardcoding `bun test` made TEST unconditionally fail on every non-JS repo
+ *  (all of SWE-bench is Python): the command is meaningless there, so the run
+ *  burned its whole REPAIR budget "fixing" a patch that was never the problem. */
+export function detectTestCommand(workspace: string): TestCommand {
+  const has = (...names: string[]) => names.some((n) => existsSync(join(workspace, n)));
+
+  if (has("pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini", "conftest.py")) {
+    return { cmd: "python", args: ["-m", "pytest", "-x", "-q"], display: "python -m pytest", framework: "pytest" };
+  }
+  if (has("go.mod")) {
+    return { cmd: "go", args: ["test", "./..."], display: "go test ./...", framework: "go test" };
+  }
+  if (has("Cargo.toml")) {
+    return { cmd: "cargo", args: ["test"], display: "cargo test", framework: "cargo test" };
+  }
+  if (has("Gemfile", ".rspec")) {
+    return { cmd: "bundle", args: ["exec", "rspec"], display: "bundle exec rspec", framework: "RSpec" };
+  }
+  if (has("pom.xml")) {
+    return { cmd: "mvn", args: ["-q", "test"], display: "mvn test", framework: "JUnit" };
+  }
+  // JS/TS (and the fallback): bun is this project's own runner.
+  return { cmd: process.execPath || "bun", args: ["test"], display: "bun test", framework: "bun:test" };
+}
+
+/** Run the project's own test command in the workspace and capture output. */
 export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestRunResult {
-  const r = spawnSync(process.execPath || "bun", ["test"], {
+  const tc = detectTestCommand(workspace);
+  const r = spawnSync(tc.cmd, tc.args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: timeoutMs,
   });
+  // A missing interpreter (ENOENT) is not a test failure — surface it as such
+  // so the caller does not send the agent into a pointless repair loop.
+  if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") {
+    return {
+      exitCode: -1,
+      output: `[test runner unavailable: ${tc.display} — ${tc.cmd} not found]`,
+      unavailable: true,
+    };
+  }
   return {
     exitCode: r.status ?? -1,
     output: `${r.stdout ?? ""}\n${r.stderr ?? ""}`,
+    unavailable: false,
   };
 }
 
