@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
 import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff, escalationLesson } from "./project-run";
-import { detectTestCommand } from "./workspace-runner";
+import { detectTestCommand, isTestInfraFailure } from "./workspace-runner";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -357,5 +357,26 @@ describe("detectTestCommand", () => {
 
   it("prefers Python over a stray package.json (Python repos often ship one)", () => {
     expect(detectTestCommand(mk(["pyproject.toml", "package.json"])).framework).toBe("pytest");
+  });
+});
+
+describe("isTestInfraFailure", () => {
+  it("flags a broken pytest harness (unbuilt package — the astropy case)", () => {
+    const out = "ImportError while loading conftest '/tmp/x/conftest.py'.\nE UserWarning: could not determine astropy package version; this indicates a broken installation";
+    expect(isTestInfraFailure(out, 4, "pytest")).toBe(true);
+  });
+
+  it("uses pytest exit codes: only 1 is a genuine test failure", () => {
+    expect(isTestInfraFailure("FAILED t.py::x - assert 1 == 2", 1, "pytest")).toBe(false);
+    expect(isTestInfraFailure("no tests ran", 5, "pytest")).toBe(true);  // nothing collected
+    expect(isTestInfraFailure("interrupted", 3, "pytest")).toBe(true);   // internal error
+  });
+
+  it("flags missing dependencies for bun too", () => {
+    expect(isTestInfraFailure("error: Cannot find package 'minimatch'", 1, "bun:test")).toBe(true);
+  });
+
+  it("does not flag a passing run", () => {
+    expect(isTestInfraFailure("2 passed", 0, "pytest")).toBe(false);
   });
 });

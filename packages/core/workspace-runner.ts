@@ -92,6 +92,31 @@ export function detectTestCommand(workspace: string): TestCommand {
   return { cmd: process.execPath || "bun", args: ["test"], display: "bun test", framework: "bun:test" };
 }
 
+/** Signatures of a test harness that could not run at all — as opposed to a
+ *  test suite that ran and reported failures. Editing source cannot fix these,
+ *  so sending them to REPAIR burns the whole repair budget for nothing. */
+const INFRA_FAILURE_PATTERNS = [
+  /ImportError while loading conftest/i,
+  /ERROR collecting/i,
+  /INTERNALERROR/i,
+  /broken installation/i,
+  /error: Cannot find package/i,      // bun: deps not installed
+  /can't open file|No such file or directory/i,
+  /command not found/i,
+];
+
+/** True when the failure is the harness itself, not the code under test. */
+export function isTestInfraFailure(
+  output: string,
+  exitCode: number,
+  framework: string
+): boolean {
+  // pytest exit codes: 0 ok | 1 tests failed | 2 interrupted | 3 internal
+  // error | 4 usage error | 5 no tests collected. Only 1 is a real failure.
+  if (framework === "pytest" && exitCode !== 0 && exitCode !== 1) return true;
+  return INFRA_FAILURE_PATTERNS.some((re) => re.test(output));
+}
+
 /** Run the project's own test command in the workspace and capture output. */
 export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestRunResult {
   const tc = detectTestCommand(workspace);
@@ -109,10 +134,12 @@ export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestR
       unavailable: true,
     };
   }
+  const exitCode = r.status ?? -1;
+  const output = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
   return {
-    exitCode: r.status ?? -1,
-    output: `${r.stdout ?? ""}\n${r.stderr ?? ""}`,
-    unavailable: false,
+    exitCode,
+    output,
+    unavailable: exitCode !== 0 && isTestInfraFailure(output, exitCode, tc.framework),
   };
 }
 
