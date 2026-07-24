@@ -210,6 +210,9 @@ export class ProjectRun implements AgentHandler {
   private handoff: { from: State; content: string } | null = null;
   /** Cumulative token spend across every agent call in this run. */
   private totalTokens = 0;
+  /** Set when TEST found the harness itself unrunnable, so REVIEW does not
+   *  gate on a test command that cannot succeed. */
+  private testsUnavailable = false;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -778,8 +781,12 @@ export class ProjectRun implements AgentHandler {
     if (testRun.unavailable) {
       this.traceSystem("TEST", { decision: "test runner unavailable — skipping repair", output: testRun.output });
       this.lastTestFailures = [];
+      // Remember it: REVIEW must not gate on a test run that cannot work, or
+      // it rejects every attempt and the review cycle escalates instead.
+      this.testsUnavailable = true;
       return { type: "TESTS_PASS" };
     }
+    this.testsUnavailable = false;
     const failures = parseTestFailures(testRun.output);
     const failedFiles = [...new Set(failures.map((f) => f.file))];
     const changed = getChangedFiles(this.cfg.workspace);
@@ -849,7 +856,13 @@ export class ProjectRun implements AgentHandler {
           ? ["- The full diff of the run's changes is provided above — review it first",
              "- Use read_file only where you need more context around a change"]
           : ["- Use glob_files and read_file to inspect the code"]),
-        `- Run \`${detectTestCommand(this.cfg.workspace).display}\` to confirm tests pass`,
+        ...(this.testsUnavailable
+          ? [
+              "- IMPORTANT: this workspace's test suite CANNOT be run (the package is not",
+              "  built/installed here). Do NOT ask for tests to pass and do NOT reject the",
+              "  work for unrun or failing tests — judge the change on the diff alone.",
+            ]
+          : [`- Run \`${detectTestCommand(this.cfg.workspace).display}\` to confirm tests pass`]),
         "- Reply with VERDICT: APPROVE if the work is acceptable",
         "- Reply with VERDICT: MUST_FIX and list issues if it needs rework",
       ],
