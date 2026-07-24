@@ -7,6 +7,10 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+// Bun's native fetch ignores HTTPS_PROXY, so a direct fetch to HuggingFace is
+// reset in proxied environments. proxyFetch routes through the proxy there and
+// is a no-op elsewhere.
+import { proxyFetch } from "@projectos/core";
 
 const CACHE_DIR = join(process.env.HOME ?? "~", ".projectos", "swe-bench-cache");
 const HF_BASE = "https://datasets-server.huggingface.co/rows";
@@ -45,7 +49,7 @@ export async function loadSweBenchLite(opts: {
     console.log("Fetching SWE-bench Lite from HuggingFace (paginated)...");
     while (true) {
       const url = `${HF_BASE}?dataset=${encodeURIComponent(HF_DATASET)}&config=default&split=test&offset=${offset}&length=${pageSize}`;
-      const res = await fetch(url);
+      const res = await proxyFetch(url);
       if (!res.ok) throw new Error(`HuggingFace fetch failed: ${res.status} ${res.statusText}`);
       const json = await res.json() as { rows: Array<{ row: SweBenchInstance }>; num_rows_total: number };
       const page = json.rows.map((r) => r.row);

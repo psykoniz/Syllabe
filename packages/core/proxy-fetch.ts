@@ -60,6 +60,9 @@ async function curlFetch(
     "--include",            // include response headers
     "--max-time", "90",
     "--proxy", PROXY_URL,
+    // Without this, --include also prints the proxy's CONNECT response headers
+    // ("HTTP/1.1 200 Connection established") ahead of the real response.
+    "--suppress-connect-headers",
     "--cacert", CA_BUNDLE,
     "-X", method,
     urlStr,
@@ -87,30 +90,35 @@ async function curlFetch(
     throw new Error(`curlFetch: curl exited ${proc.status}: ${proc.stderr?.slice(0, 200)}`);
   }
 
-  const raw: string = proc.stdout;
-
-  // Parse HTTP response (may have multiple header blocks for redirects)
-  const blocks = raw.split(/(?=HTTP\/[\d.]+\s)/);
-  const lastBlock = blocks[blocks.length - 1] ?? "";
-  const headerEnd = lastBlock.indexOf("\r\n\r\n");
-  if (headerEnd < 0) throw new Error("curlFetch: malformed response — no header terminator");
-
-  const headerSection = lastBlock.slice(0, headerEnd);
-  const bodyBinary = lastBlock.slice(headerEnd + 4);
-
-  const [statusLine, ...headerLines] = headerSection.split("\r\n");
-  const statusCode = parseInt((statusLine ?? "HTTP/1.1 200").split(" ")[1] ?? "200", 10);
-
+  // Parse header blocks from the FRONT of the response. Never split the whole
+  // payload on /HTTP\/\d/ — response bodies legitimately contain that string
+  // (SWE-bench issue text, HTTP docs, …) and splitting on it corrupts the body.
+  let rest: string = proc.stdout;
+  let statusCode = 0;
   const respHeaders = new Headers();
-  for (const line of headerLines) {
-    const colon = line.indexOf(":");
-    if (colon > 0) {
-      respHeaders.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+
+  for (;;) {
+    const headerEnd = rest.indexOf("\r\n\r\n");
+    if (headerEnd < 0) throw new Error("curlFetch: malformed response — no header terminator");
+    const [statusLine, ...headerLines] = rest.slice(0, headerEnd).split("\r\n");
+    if (!/^HTTP\/[\d.]+\s/.test(statusLine ?? "")) {
+      throw new Error(`curlFetch: unexpected status line: ${(statusLine ?? "").slice(0, 60)}`);
     }
+    statusCode = parseInt(statusLine.split(" ")[1] ?? "0", 10);
+    rest = rest.slice(headerEnd + 4);
+    // Another header block follows when this one was informational (1xx) or a
+    // proxy CONNECT preamble that --suppress-connect-headers didn't remove (old
+    // curl). Testing only position 0 of the remainder is safe: response bodies
+    // may *contain* "HTTP/1.1" but do not *start* with a status line.
+    if ((statusCode >= 100 && statusCode < 200) || /^HTTP\/[\d.]+\s/.test(rest)) continue;
+    for (const line of headerLines) {
+      const colon = line.indexOf(":");
+      if (colon > 0) respHeaders.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+    }
+    break;
   }
 
-  const bodyBuffer = Buffer.from(bodyBinary, "binary");
-  return new Response(bodyBuffer, { status: statusCode, headers: respHeaders });
+  return new Response(Buffer.from(rest, "binary"), { status: statusCode, headers: respHeaders });
 }
 
 /**

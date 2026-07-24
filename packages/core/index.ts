@@ -53,3 +53,4 @@ export {
   buildRepairDiagnostic,
 } from "./workspace-runner";
 export type { InstallResult, TestRunResult, TestFailure } from "./workspace-runner";
+export { proxyFetch, makeProxyFetch } from "./proxy-fetch";
