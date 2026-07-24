@@ -101,6 +101,8 @@ export async function runInstance(
     modelOverride?: string;
     maxIterationsPerState?: number;
     autoSteering?: boolean;
+    /** Hard per-instance token ceiling — the only in-run spend guard. */
+    tokenBudgetPerInstance?: number;
   } = {}
 ): Promise<{ result: SWEBenchRunResult; predictionLine: string | null }> {
   const start = Date.now();
@@ -135,6 +137,9 @@ export async function runInstance(
         maxIterationsPerState: opts.maxIterationsPerState ?? 15,
         modelOverride: opts.modelOverride ?? process.env.PROJECTOS_MODEL_OVERRIDE,
         autoSteering: opts.autoSteering ?? false,
+        // Without this a single instance is unbounded: the suite's cost cap is
+        // only checked BETWEEN instances, so on a 1-instance run it never fires.
+        tokenBudget: opts.tokenBudgetPerInstance,
       });
 
       const result = await run.run();
@@ -190,6 +195,7 @@ export async function runSWEBenchSuite(
     autoSteering?: boolean;
     costCapUsd?: number;
     outputDir?: string;
+    tokenBudgetPerInstance?: number;
   } = {}
 ): Promise<SWEBenchSuiteResult> {
   const outDir = opts.outputDir ?? OUTPUT_DIR;
@@ -201,6 +207,22 @@ export async function runSWEBenchSuite(
   writeFileSync(predictionsPath, "");
 
   const costCap = opts.costCapUsd ?? 50;
+
+  // The loop below only checks the cap BETWEEN instances, so on a 1-instance
+  // run it can never fire. Derive a per-instance token ceiling from the cap so
+  // a single runaway run is bounded too. Observed traces are ~98% input
+  // tokens, so pricing the whole budget at the priciest tier the router uses
+  // (opus-4-8 input, $5/M) is a deliberately conservative conversion.
+  const WORST_CASE_USD_PER_MTOK = 5;
+  const perInstanceCap = costCap / Math.max(instances.length, 1);
+  const tokenBudgetPerInstance =
+    opts.tokenBudgetPerInstance ??
+    Math.max(500_000, Math.floor((perInstanceCap / WORST_CASE_USD_PER_MTOK) * 1_000_000));
+  console.log(
+    `Per-instance token budget: ${tokenBudgetPerInstance.toLocaleString()} ` +
+    `(~$${perInstanceCap.toFixed(2)} worst case)`
+  );
+
   const results: SWEBenchRunResult[] = [];
   let totalCost = 0;
 
@@ -211,7 +233,10 @@ export async function runSWEBenchSuite(
     }
 
     console.log(`\n[${results.length + 1}/${instances.length}] ${instance.instance_id} (${instance.repo})`);
-    const { result, predictionLine } = await runInstance(instance, modelName, opts);
+    const { result, predictionLine } = await runInstance(instance, modelName, {
+      ...opts,
+      tokenBudgetPerInstance,
+    });
     results.push(result);
     totalCost += result.costUsd;
     if (predictionLine) appendFileSync(predictionsPath, predictionLine);
