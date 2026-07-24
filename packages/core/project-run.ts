@@ -36,6 +36,7 @@ import {
   buildRepairDiagnostic,
   buildStructuredDiagnostic,
   detectTestCommand,
+  isTestInfraFailure,
 } from "./workspace-runner";
 import type { TestFailure } from "./workspace-runner";
 import { spawnSync } from "child_process";
@@ -210,9 +211,11 @@ export class ProjectRun implements AgentHandler {
   private handoff: { from: State; content: string } | null = null;
   /** Cumulative token spend across every agent call in this run. */
   private totalTokens = 0;
-  /** Set when TEST found the harness itself unrunnable, so REVIEW does not
-   *  gate on a test command that cannot succeed. */
-  private testsUnavailable = false;
+  /** Whether this workspace's test suite can run at all. Cached per run and
+   *  probed independently of any agent verdict: a test-engineer that reports
+   *  PASS short-circuits the deterministic run, so deriving it from there left
+   *  REVIEW still demanding a test command that cannot work. */
+  private testHarnessOk: boolean | null = null;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
@@ -379,6 +382,41 @@ export class ProjectRun implements AgentHandler {
     } catch {
       return null;
     }
+  }
+
+  /** Can this workspace's tests run at all? Probed once per run with a cheap
+   *  collection-only pass (pytest --collect-only surfaces conftest/import
+   *  errors in seconds without executing anything). Cached for the run. */
+  private testsCanRun(): boolean {
+    if (this.testHarnessOk !== null) return this.testHarnessOk;
+    const tc = detectTestCommand(this.cfg.workspace);
+    const probeArgs =
+      tc.framework === "pytest"
+        ? ["-m", "pytest", "--collect-only", "-q"]
+        : tc.args;
+    try {
+      const r = spawnSync(tc.cmd, probeArgs, {
+        cwd: this.cfg.workspace,
+        encoding: "utf8",
+        timeout: 90_000,
+      });
+      const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+      const code = r.status ?? -1;
+      const broken =
+        (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") ||
+        isTestInfraFailure(out, code, tc.framework);
+      this.testHarnessOk = !broken;
+      if (broken) {
+        this.traceSystem("TEST", {
+          decision: "test harness cannot run in this workspace",
+          probe: tc.display,
+          detail: out.slice(0, 300),
+        });
+      }
+    } catch {
+      this.testHarnessOk = false;
+    }
+    return this.testHarnessOk;
   }
 
   /** Render the pending handoff as a prompt section, or null. */
@@ -757,6 +795,13 @@ export class ProjectRun implements AgentHandler {
       ],
     });
 
+    // If the suite cannot run at all, asking an agent to run it is pure waste:
+    // skip straight to REVIEW, which judges on the diff instead.
+    if (!this.testsCanRun()) {
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+
     const result = await this.callAgent("test-engineer", prompt);
     // Robust parsing: strict `VERDICT: PASS` first, then keyword fallback. A
     // missed/false verdict is recovered below by the deterministic test run.
@@ -781,12 +826,9 @@ export class ProjectRun implements AgentHandler {
     if (testRun.unavailable) {
       this.traceSystem("TEST", { decision: "test runner unavailable — skipping repair", output: testRun.output });
       this.lastTestFailures = [];
-      // Remember it: REVIEW must not gate on a test run that cannot work, or
-      // it rejects every attempt and the review cycle escalates instead.
-      this.testsUnavailable = true;
+      this.testHarnessOk = false;
       return { type: "TESTS_PASS" };
     }
-    this.testsUnavailable = false;
     const failures = parseTestFailures(testRun.output);
     const failedFiles = [...new Set(failures.map((f) => f.file))];
     const changed = getChangedFiles(this.cfg.workspace);
@@ -856,7 +898,7 @@ export class ProjectRun implements AgentHandler {
           ? ["- The full diff of the run's changes is provided above — review it first",
              "- Use read_file only where you need more context around a change"]
           : ["- Use glob_files and read_file to inspect the code"]),
-        ...(this.testsUnavailable
+        ...(!this.testsCanRun()
           ? [
               "- IMPORTANT: this workspace's test suite CANNOT be run (the package is not",
               "  built/installed here). Do NOT ask for tests to pass and do NOT reject the",
