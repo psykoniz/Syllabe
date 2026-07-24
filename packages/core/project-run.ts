@@ -256,6 +256,24 @@ export class ProjectRun implements AgentHandler {
       if (existsSync(join(this.cfg.workspace, ".git"))) {
         this.repoContext = buildSmartRepoContext(this.cfg.workspace, this.cfg.task);
         this.repoTree = buildRepoTree(this.cfg.workspace);
+        // Record HEAD as the base SHA here too. Without it workspaceDiff()
+        // falls back to `git diff HEAD`, which goes blank as soon as the agent
+        // commits — so REVIEW/DOCUMENT would silently get an empty diff on
+        // exactly the harnesses that pre-populate a workspace (SWE-bench).
+        try {
+          const head = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: this.cfg.workspace, encoding: "utf8",
+          }).stdout?.trim();
+          if (head) {
+            writeFileSync(
+              join(this.agentDir, "repo.json"),
+              JSON.stringify({ base_sha: head, base_branch: null, work_branch: null }, null, 2),
+              "utf8"
+            );
+          }
+        } catch {
+          // best-effort — workspaceDiff degrades to `git diff HEAD`
+        }
       }
       return;
     }
@@ -341,6 +359,10 @@ export class ProjectRun implements AgentHandler {
       if (existsSync(repoJson)) {
         base = (JSON.parse(readFileSync(repoJson, "utf8")) as { base_sha?: string }).base_sha ?? null;
       }
+      // Intent-to-add registers untracked files in the index without staging
+      // their content, so brand-new files the agent wrote show up as additions
+      // in the diff below. Without this the reviewer never sees new files.
+      spawnSync("git", ["add", "-N", "--", "."], { cwd: this.cfg.workspace, encoding: "utf8" });
       const args = base ? ["diff", base] : ["diff", "HEAD"];
       const r = spawnSync("git", args, {
         cwd: this.cfg.workspace, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
