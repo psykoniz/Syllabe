@@ -13,3 +13,7 @@ evals/results/*.json
 .env*
 .agent/*
 !.agent/lessons.json
+
+# SWE-bench official harness output (per-instance Docker build/run logs).
+# Transient evaluation artifacts — the scores live in evals/results/.
+logs/
