@@ -4,6 +4,7 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { validateRepoParams, redactGitUrl } from "./validate";
 import { appendSteering } from "@projectos/core";
+import { MODEL_PRICES } from "@projectos/telemetry";
 
 const PORT = parseInt(process.env.PORT ?? "4321", 10);
 const DB_PATH = process.env.PROJECTOS_DB_PATH ?? join(process.cwd(), ".projectos", "runs.db");
@@ -142,12 +143,9 @@ function readTraces(runId: string): TraceEvent[] {
   return events;
 }
 
-const PRICE: Record<string, { input: number; output: number }> = {
-  "claude-fable-5":    { input: 10.0, output: 50.0 },
-  "claude-opus-4-8":   { input: 5.0,  output: 25.0 },
-  "claude-sonnet-4-6": { input: 3.0,  output: 15.0 },
-  "claude-haiku-4-5":  { input: 1.0,  output: 5.0  },
-};
+// Pricing comes from @projectos/telemetry (single source of truth) so OpenAI /
+// gpt-5.x runs no longer render as <$0.001 from a stale claude-only table.
+const PRICE = MODEL_PRICES;
 
 // Prompt caching multipliers (× input price): read ≈ 0.1, write ≈ 1.25.
 const CACHE_READ_MULT = 0.1;

@@ -129,6 +129,11 @@ export interface AgentRunnerOptions {
   /** Max characters of a single tool result fed back to the model (default 16000) */
   maxToolResultChars?: number;
   maxTokensPerTurn?: number;
+  /** Hard ceiling on total tokens for this loop. When exceeded the loop stops
+   *  and returns with stopReason "token_budget" instead of running to
+   *  maxIterations. Without it a single session on a real repository is
+   *  unbounded — the state machine had this guard, the plain loop did not. */
+  tokenBudget?: number;
   /** Context compaction policy. Defaults to DEFAULT_COMPACTION (~80k tokens). */
   compaction?: CompactionOptions;
   onTurn?: (info: TurnInfo) => void;
@@ -235,16 +240,29 @@ async function executeToolUse(
     }
   }
 
-  const extra = opts.extraDispatcher
-    ? await opts.extraDispatcher(block.name, block.input)
-    : null;
-  const dispatched = extra ?? dispatchTool(block.name, block.input, opts.toolContext);
-  return {
-    type: "tool_result",
-    tool_use_id: block.id,
-    content: truncateResult(redact(dispatched.content), opts.maxToolResultChars),
-    is_error: dispatched.isError || undefined,
-  };
+  // Never let a dispatcher throw escape: an uncaught error here would leave the
+  // assistant's tool_use block in the history with no matching tool_result,
+  // corrupting the conversation for any subsequent turn. Surface it as an error
+  // result instead so the pairing always stays intact.
+  try {
+    const extra = opts.extraDispatcher
+      ? await opts.extraDispatcher(block.name, block.input)
+      : null;
+    const dispatched = extra ?? dispatchTool(block.name, block.input, opts.toolContext);
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: truncateResult(redact(dispatched.content), opts.maxToolResultChars),
+      is_error: dispatched.isError || undefined,
+    };
+  } catch (err) {
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: `tool execution failed: ${(err as Error).message}`,
+      is_error: true,
+    };
+  }
 }
 
 /** Cap tool output fed back into context — long test logs and file dumps
@@ -264,6 +282,32 @@ function truncateResult(content: string, maxChars = 16000): string {
 
 const COMPACT_BLOCK_MAX_CHARS = 200;
 
+/** Return a shallow copy of the history with a cache_control breakpoint on the
+ *  last block of the final message. Combined with the static system+tools
+ *  breakpoints, this makes Anthropic bill the whole accumulating prefix at
+ *  cache-read rates on every turn (the dominant cost in long agentic loops).
+ *  The extra field is ignored by providers that don't support it (e.g. OpenAI),
+ *  so it's safe on every path. The stored `messages` array is left untouched. */
+export function withHistoryCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
+  // On the first turn there is no accumulated prefix to read from cache yet, so
+  // skip — this also keeps the initial string prompt as a string for providers
+  // and callers that distinguish it from tool-result (block) messages.
+  if (messages.length <= 1) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1];
+  const blocks =
+    typeof last.content === "string"
+      ? [{ type: "text" as const, text: last.content }]
+      : last.content.map((b) => ({ ...b }));
+  if (blocks.length === 0) return messages;
+  blocks[blocks.length - 1] = {
+    ...blocks[blocks.length - 1],
+    cache_control: { type: "ephemeral" },
+  } as (typeof blocks)[number];
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
+}
+
 /** Shrink an old message without breaking tool_use/tool_result pairing:
  *  every block keeps its position and ids — only content strings shrink. */
 function compactMessage(msg: MessageParam): MessageParam {
@@ -281,9 +325,37 @@ function compactMessage(msg: MessageParam): MessageParam {
     if (block.type === "text" && block.text.length > COMPACT_BLOCK_MAX_CHARS) {
       return { ...block, text: block.text.slice(0, COMPACT_BLOCK_MAX_CHARS) };
     }
+    if (block.type === "tool_use") {
+      // A large tool_use input (e.g. a multi-KB bash script or write_file body)
+      // survives compaction otherwise; shrink it while keeping id/name/position
+      // so the tool_use/tool_result pairing stays intact.
+      const serialized = JSON.stringify(block.input);
+      if (serialized.length > COMPACT_BLOCK_MAX_CHARS) {
+        return { ...block, input: { _omitted: `tool input omitted: ${serialized.length} chars` } };
+      }
+    }
     return block;
   });
   return { ...msg, content };
+}
+
+/** Fast char-count estimate: avoids a full JSON.stringify(messages) on every
+ *  compaction check — that call is O(n) per turn, costing O(n²) per run on
+ *  long conversations. We still re-serialize in tests for exact assertions. */
+export function estimateMessagesChars(messages: MessageParam[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (typeof m.content === "string") {
+      total += m.content.length + 20; // role + punctuation overhead
+    } else {
+      for (const b of m.content) {
+        if (b.type === "text") total += b.text.length + 15;
+        else if (b.type === "tool_result") total += b.content.length + 30;
+        else if (b.type === "tool_use") total += JSON.stringify(b.input).length + 40;
+      }
+    }
+  }
+  return total;
 }
 
 /** If the serialized history exceeds maxChars, shrink older messages:
@@ -295,7 +367,7 @@ export function compactMessages(
   messages: MessageParam[],
   opts: CompactionOptions
 ): MessageParam[] {
-  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  if (estimateMessagesChars(messages) <= opts.maxChars) return messages;
   const keepTail = opts.keepLastTurns * 2;
   const tailStart = Math.max(1, messages.length - keepTail);
   return messages.map((msg, i) =>
@@ -311,7 +383,7 @@ export async function compactMessagesSmart(
   messages: MessageParam[],
   opts: CompactionOptions
 ): Promise<MessageParam[]> {
-  if (JSON.stringify(messages).length <= opts.maxChars) return messages;
+  if (estimateMessagesChars(messages) <= opts.maxChars) return messages;
   if (!opts.summarizeFn) return compactMessages(messages, opts);
 
   const keepTail = opts.keepLastTurns * 2;
@@ -348,6 +420,44 @@ function textOf(content: ContentBlock[]): string {
     .join("\n");
 }
 
+/** Extract an HTTP status from a thrown error, however the provider shaped it. */
+function errorStatus(err: unknown): number | undefined {
+  const e = err as { status?: number; statusCode?: number; response?: { status?: number } };
+  return e?.status ?? e?.statusCode ?? e?.response?.status;
+}
+
+/** A transient error is worth retrying: 429, any 5xx, or a network-level
+ *  failure (no HTTP status at all — connection reset, timeout, DNS, …).
+ *  Deterministic 4xx (bad request, auth) are NOT retried. */
+function isTransient(err: unknown): boolean {
+  const status = errorStatus(err);
+  if (status === undefined) return true; // network/abort — no response received
+  return status === 429 || status >= 500;
+}
+
+/** Call createMessage with bounded exponential backoff on transient failures.
+ *  The OpenAI adapter already retries 429 internally; this guards every
+ *  provider (incl. the real Anthropic client) against 5xx and network resets,
+ *  which previously crashed the whole agentic loop on the first blip. */
+async function createMessageWithRetry(
+  createMessage: CreateMessageFn,
+  params: CreateMessageParams,
+  maxRetries = 3
+): Promise<ChatResponse> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await createMessage(params);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxRetries || !isTransient(err)) throw err;
+      const delayMs = 2000 * 2 ** attempt; // 2s, 4s, 8s
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 /** Bounded agentic loop over /v1/messages with tool use.
  *  Replaces the Managed Agents session loop (see ADR-006). */
 export async function runAgent(
@@ -356,6 +466,10 @@ export async function runAgent(
 ): Promise<AgentRunResult> {
   const messages: MessageParam[] = [...initialMessages];
   const maxIterations = opts.maxIterations ?? 50;
+  // Track consecutive identical failing tool calls so a model that keeps
+  // retrying the same broken command (the astropy-14182 298k-token spiral)
+  // is told to change approach instead of looping until budget exhaustion.
+  const failureCounts = new Map<string, number>();
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
@@ -401,11 +515,11 @@ export async function runAgent(
       messages.splice(0, messages.length, ...compacted);
     }
 
-    const response = await opts.createMessage({
+    const response = await createMessageWithRetry(opts.createMessage, {
       model: opts.model,
       max_tokens: opts.maxTokensPerTurn ?? 8192,
       system,
-      messages,
+      messages: withHistoryCacheBreakpoint(messages),
       tools,
       ...reasoningParams(opts.model, opts.effort),
     });
@@ -427,6 +541,20 @@ export async function runAgent(
       toolCalls: toolUses.map((t) => t.name),
     });
 
+    // The model hit the per-turn token ceiling mid-response: rather than return
+    // a truncated answer, prompt it to continue exactly where it left off.
+    // Only do this when there is budget left and no tool call is pending.
+    if (response.stop_reason === "max_tokens" && toolUses.length === 0 && turn < maxIterations) {
+      finalText = textOf(response.content);
+      messages.push({
+        role: "user",
+        content:
+          "Your previous response was cut off at the token limit. Continue exactly where you " +
+          "left off — do not repeat what you already wrote.",
+      });
+      continue;
+    }
+
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
       finalText = textOf(response.content);
       return {
@@ -438,9 +566,49 @@ export async function runAgent(
       };
     }
 
+    // Keep the latest assistant prose as finalText so a run that exhausts its
+    // iteration budget mid-tool-loop still returns the model's last words
+    // instead of an empty string.
+    const latestText = textOf(response.content);
+    if (latestText) finalText = latestText;
+
+    // Spend ceiling: stop before dispatching another round of tools.
+    if (opts.tokenBudget && inputTokens + outputTokens > opts.tokenBudget) {
+      return {
+        finalText:
+          finalText ||
+          `[stopped: token budget of ${opts.tokenBudget.toLocaleString()} exceeded]`,
+        messages,
+        usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
+        turns: turn,
+        stopReason: "token_budget",
+      };
+    }
+
+    // Run all tool calls concurrently — read-only calls (read_file, glob_files,
+    // grep_files, git_status, git_diff) are embarrassingly parallel; write calls
+    // are typically alone in a turn so there is no practical conflict risk.
+    const settled = await Promise.all(toolUses.map((block) => executeToolUse(block, opts)));
+
     const results: ToolResultBlock[] = [];
-    for (const block of toolUses) {
-      results.push(await executeToolUse(block, opts));
+    for (let i = 0; i < toolUses.length; i++) {
+      const block = toolUses[i];
+      const result = settled[i];
+      const sig = `${block.name}:${JSON.stringify(block.input)}`;
+      if (result.is_error) {
+        const n = (failureCounts.get(sig) ?? 0) + 1;
+        failureCounts.set(sig, n);
+        // Third identical failure in a row → stop the model from looping.
+        if (n >= 3) {
+          result.content +=
+            `\n\n[loop guard: this exact ${block.name} call has now failed ${n} times. ` +
+            `Do NOT retry it unchanged — diagnose the root cause from the error above and ` +
+            `try a fundamentally different approach, or move on.]`;
+        }
+      } else {
+        failureCounts.delete(sig); // recovered — reset the counter
+      }
+      results.push(result);
     }
     messages.push({ role: "user", content: results });
   }

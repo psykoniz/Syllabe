@@ -149,16 +149,23 @@ export default function RunDetailPage() {
   const displayEvents = replayMode ? liveEvents.slice(0, scrubberIndex + 1) : liveEvents;
   const maxIndex = Math.max(0, liveEvents.length - 1);
 
-  // Price table kept in sync with @projectos/telemetry MODEL_PRICES
+  // Price table kept in sync with @projectos/telemetry MODEL_PRICES.
+  // Duplicated here (not imported) to keep the browser bundle free of the
+  // telemetry package's fs-backed modules (traces/replay). Update both together.
   const MODEL_PRICES: Record<string, [number, number]> = {
     "claude-fable-5":    [10, 50],
     "claude-opus-4-8":   [5,  25],
     "claude-sonnet-4-6": [3,  15],
     "claude-haiku-4-5":  [1,   5],
+    "gpt-5.5":           [10, 40],
+    "gpt-5.4":           [10, 40],
+    "gpt-4o":            [2.5, 10],
+    "gpt-4o-mini":       [0.15, 0.6],
   };
 
   function calcEventCost(model: string, inputTokens: number, outputTokens: number): number {
-    const [inRate, outRate] = MODEL_PRICES[model] ?? [3, 15];
+    // Unknown model → 0 (matches server priceFor) rather than guessing sonnet rates.
+    const [inRate, outRate] = MODEL_PRICES[model] ?? [0, 0];
     return (inputTokens / 1_000_000) * inRate + (outputTokens / 1_000_000) * outRate;
   }
 

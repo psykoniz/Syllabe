@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, existsSync, readFileSync, statSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 
 export const BLUEPRINT_FILES = [
@@ -89,8 +89,11 @@ export class BlueprintSession {
         continue;
       }
       try {
-        const size = statSync(p).size;
-        if (size === 0) missing.push(f);
+        // A file of whitespace-only bytes is structurally non-empty but
+        // semantically empty — it must not pass validation, or the DESIGN
+        // retry never fires and PLAN extracts work units from a blank plan.
+        const body = readFileSync(p, "utf8");
+        if (body.trim().length === 0) missing.push(f);
       } catch {
         missing.push(f);
       }

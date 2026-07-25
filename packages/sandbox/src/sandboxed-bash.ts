@@ -30,8 +30,8 @@ export class SandboxedBash {
     });
   }
 
-  run(command: string): BashResult {
-    return this.sandbox.run(command);
+  run(command: string, timeoutMs?: number): BashResult {
+    return this.sandbox.run(command, timeoutMs);
   }
 
   getEnv(): Record<string, string> {

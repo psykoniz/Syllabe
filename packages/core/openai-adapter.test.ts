@@ -95,7 +95,15 @@ describe("fromOpenAiResponse", () => {
     });
     expect(r.content).toEqual([{ type: "text", text: "hi" }]);
     expect(r.stop_reason).toBe("end_turn");
-    expect(r.usage).toEqual({ input_tokens: 10, output_tokens: 5 });
+    expect(r.usage).toEqual({ input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0 });
+  });
+
+  it("surfaces cached prompt tokens as cache_read_input_tokens", () => {
+    const r = fromOpenAiResponse({
+      choices: [{ message: { content: "hi" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } },
+    });
+    expect(r.usage.cache_read_input_tokens).toBe(80);
   });
 
   it("maps tool_calls to tool_use blocks", () => {

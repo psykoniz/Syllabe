@@ -71,6 +71,15 @@ describe("BlueprintSession.validate", () => {
     expect(result.missing).toContain("product.md");
   });
 
+  it("returns valid=false when a file is whitespace-only", () => {
+    const s = new BlueprintSession();
+    s.saveBlueprint(AGENT_DIR, SAMPLE_CONTENT);
+    writeFileSync(join(AGENT_DIR, "architecture.md"), "   \n\n\t\n");
+    const result = s.validate(AGENT_DIR);
+    expect(result.valid).toBe(false);
+    expect(result.missing).toContain("architecture.md");
+  });
+
   it("reports all missing files individually", () => {
     const s = new BlueprintSession();
     writeFileSync(join(AGENT_DIR, "product.md"), "content");

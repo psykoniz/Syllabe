@@ -15,7 +15,7 @@ export interface ToolDef {
 
 /** Anything that can execute a shell command — BashTool or a sandboxed runner */
 export interface BashRunner {
-  run(command: string): { stdout: string; stderr: string; exitCode: number };
+  run(command: string, timeoutMs?: number): { stdout: string; stderr: string; exitCode: number };
   getEnv(): Record<string, string>;
 }
 
@@ -36,11 +36,14 @@ export interface ToolDispatchResult {
 export const TOOL_DEFINITIONS: ToolDef[] = [
   {
     name: "read_file",
-    description: "Read the contents of a file at the given path.",
+    description:
+      "Read the contents of a file at the given path. Pass start_line/end_line (1-indexed, inclusive) to read only a region of a large file; the returned lines are then prefixed with their line numbers.",
     input_schema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute or relative file path" },
+        start_line: { type: "number", description: "First line to read (1-indexed, inclusive)" },
+        end_line: { type: "number", description: "Last line to read (1-indexed, inclusive)" },
       },
       required: ["path"],
     },
@@ -95,17 +98,25 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
         pattern: { type: "string", description: "Regex pattern to search for" },
         files: { type: "array", items: { type: "string" }, description: "File paths to search" },
         context_lines: { type: "number", description: "Lines of context to show around each match" },
+        max_matches: { type: "number", description: "Cap on total matches returned (default 200)" },
       },
       required: ["pattern", "files"],
     },
   },
   {
     name: "bash",
-    description: "Execute a bash command in the workspace directory (30s timeout).",
+    description:
+      "Execute a bash command in the workspace directory. Default timeout 30s; pass timeout_s " +
+      "to override (max 300). Long-running steps (build, test suites) should set timeout_s " +
+      "explicitly. A [timed out] message is appended when the limit is hit — it is NOT a test failure.",
     input_schema: {
       type: "object",
       properties: {
         command: { type: "string", description: "Shell command to run" },
+        timeout_s: {
+          type: "number",
+          description: "Per-call timeout in seconds (1–300, default 30)",
+        },
       },
       required: ["command"],
     },
@@ -153,7 +164,12 @@ export function dispatchTool(
   try {
     switch (toolName) {
       case "read_file":
-        return ok(ctx.fs.read(resolvePath(input.path as string, ctx.workspace)));
+        return ok(
+          ctx.fs.read(resolvePath(input.path as string, ctx.workspace), {
+            startLine: input.start_line as number | undefined,
+            endLine: input.end_line as number | undefined,
+          })
+        );
 
       case "write_file":
         ctx.fs.write(resolvePath(input.path as string, ctx.workspace), input.content as string, {
@@ -182,6 +198,7 @@ export function dispatchTool(
         const files = (input.files as string[]).map((f) => resolvePath(f, ctx.workspace));
         const r = ctx.fs.grep(input.pattern as string, files, {
           contextLines: (input.context_lines as number) ?? 0,
+          maxMatches: input.max_matches as number | undefined,
         });
         const lines: string[] = [];
         for (const m of r.matches) {
@@ -197,18 +214,31 @@ export function dispatchTool(
             }
           }
         }
-        const body = lines.join("\n") || "(no matches)";
-        return ok(
-          r.truncated ? `${body}\n[truncated: showing first ${r.matches.length} matches]` : body
-        );
+        let body = lines.join("\n") || "(no matches)";
+        if (r.truncated) body += `\n[truncated: showing first ${r.matches.length} matches]`;
+        if (r.missingFiles.length > 0) {
+          body += `\n[skipped ${r.missingFiles.length} non-existent file(s): ${r.missingFiles
+            .slice(0, 5)
+            .join(", ")}${r.missingFiles.length > 5 ? ", …" : ""}]`;
+        }
+        return ok(body);
       }
 
       case "bash": {
-        const r = ctx.bash.run(input.command as string);
+        const rawTimeout = input.timeout_s as number | undefined;
+        const cappedTimeoutMs = rawTimeout
+          ? Math.min(Math.max(rawTimeout, 1), 300) * 1000
+          : undefined;
+        const r = ctx.bash.run(input.command as string, cappedTimeoutMs);
+        const timedOut =
+          (r.exitCode !== 0 && r.stderr === "" && r.stdout === "") ||
+          r.stderr?.includes("ETIMEDOUT") ||
+          false;
         const out = [
           r.stdout,
           r.stderr ? `[stderr] ${r.stderr}` : "",
           r.exitCode !== 0 ? `[exit ${r.exitCode}]` : "",
+          timedOut ? `[timed out after ${rawTimeout ?? 30}s — this is NOT a test failure; retry with a longer timeout_s or simplify the command]` : "",
         ]
           .filter(Boolean)
           .join("\n");

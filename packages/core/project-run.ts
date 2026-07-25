@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { runAgentLoop } from "./agent-loop";
 import { makeContext } from "./state-machine";
@@ -35,6 +35,8 @@ import {
   changedFileStats,
   buildRepairDiagnostic,
   buildStructuredDiagnostic,
+  detectTestCommand,
+  isTestInfraFailure,
 } from "./workspace-runner";
 import type { TestFailure } from "./workspace-runner";
 import { spawnSync } from "child_process";
@@ -78,6 +80,64 @@ export interface ProjectRunConfig {
    *  default, ~$0.0002/transition). Corrections are injected as steering
    *  messages consumed by the next state's prompt. */
   autoSteering?: boolean;
+  /** Hard cap on total tokens for the run (default 3M). A run that blows past
+   *  this is stuck in a loop — escalating early with a clear reason costs 10×
+   *  less than letting review/repair cycles burn until their iteration caps. */
+  tokenBudget?: number;
+}
+
+/** Default per-run token budget (~$15-30 depending on model). */
+const DEFAULT_TOKEN_BUDGET = 3_000_000;
+
+/** Cap an inter-state handoff at ~600 tokens so it informs without bloating. */
+export function capHandoff(text: string, maxChars = 2400): string {
+  const t = text.trim();
+  return t.length <= maxChars ? t : t.slice(0, maxChars) + "\n[... handoff truncated ...]";
+}
+
+/** Build a lesson from an escalated run WITHOUT any LLM call — the reason and
+ *  state are already known deterministically. Costs zero tokens now, and the
+ *  next run on the same project sees it in its memory block (e.g. "previous
+ *  run burned its budget in review cycles" steers the architect to smaller
+ *  work units). Exported for unit testing. */
+export function escalationLesson(
+  task: string,
+  runId: string,
+  reason: string,
+  state: string
+): Lesson {
+  const trigger = task
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 3)
+    .slice(0, 3)
+    .join(" ");
+  return {
+    trigger: trigger || "escalation",
+    content: `A previous run on this task escalated at ${state}: ${reason.slice(0, 300)}. ` +
+      `Structure the work to avoid repeating this failure.`,
+    runId,
+    approved: true,
+  };
+}
+
+/** Parse a VERDICT from agent output. Tries the strict `VERDICT: X` form
+ *  first, then falls back to a bare keyword scan of the final 500 chars
+ *  ("the tests pass, so my verdict is APPROVE" must not read as a rejection).
+ *  Returns null when neither keyword appears — the caller decides the default. */
+export function parseVerdict(text: string, positive: string, negative: string): boolean | null {
+  const strict = new RegExp(`VERDICT:\\s*(${positive}|${negative.replace("_", "[_ ]")})`, "i").exec(text);
+  if (strict) {
+    return strict[1].toUpperCase().replace(" ", "_") === positive.toUpperCase();
+  }
+  const tail = text.slice(-500).toUpperCase();
+  const posIdx = tail.lastIndexOf(positive.toUpperCase());
+  const negIdx = Math.max(
+    tail.lastIndexOf(negative.toUpperCase()),
+    tail.lastIndexOf(negative.toUpperCase().replace("_", " "))
+  );
+  if (posIdx === -1 && negIdx === -1) return null;
+  return posIdx > negIdx;
 }
 
 /** Framing prepended to the repo context so it never expands the task scope. */
@@ -93,26 +153,45 @@ const EXISTING_REPO_INSTRUCTION =
   "This is an existing repository — locate the right files with the file tree above and " +
   "modify in place; run the project's own test command.";
 
-/** Reasoning effort per role: max only where deep reflection pays off.
- *  CLARIFY (product-strategist) is mostly mechanical — high is enough. */
-const ROLE_EFFORT: Partial<Record<Role, EffortLevel>> = {
-  "architect": "max",
-  "reviewer":  "max",
+/** Per-role token ceiling per turn. Architect and implementer need long context
+ *  windows for multi-file diffs and blueprints; simpler roles cap lower to
+ *  reduce cost and output sprawl. */
+const ROLE_MAX_TOKENS: Record<Role, number> = {
+  "architect":          16384,
+  "implementer":        16384,
+  "reviewer":           8192,
+  "product-strategist": 4096,
+  "test-engineer":      8192,
+  "memory-curator":     2048,
+  "harness-optimizer":  4096,
+};
+
+/** Reasoning effort per role: high for design, review, clarify and implementation
+ *  (the implementer writes the scored patch); low for testing, memory-curating and
+ *  harness optimizing. */
+const ROLE_EFFORT: Record<Role, EffortLevel> = {
+  "architect":          "high",
+  "reviewer":           "high",
   "product-strategist": "high",
+  "implementer":        "high",
+  "test-engineer":      "low",
+  "memory-curator":     "low",
+  "harness-optimizer":  "low",
 };
 
 /** State → role mapping */
 const STATE_ROLE: Partial<Record<State, Role>> = {
-  INTAKE:    "product-strategist",
-  CLARIFY:   "product-strategist",
-  DESIGN:    "architect",
-  PLAN:      "architect",
-  IMPLEMENT: "implementer",
-  TEST:      "test-engineer",
-  REPAIR:    "implementer",
-  REVIEW:    "reviewer",
-  DOCUMENT:  "implementer",
-  LEARN:     "memory-curator",
+  INTAKE:     "product-strategist",
+  CLARIFY:    "product-strategist",
+  DESIGN:     "architect",
+  PLAN:       "architect",
+  REPRODUCE:  "test-engineer",
+  IMPLEMENT:  "implementer",
+  TEST:       "test-engineer",
+  REPAIR:     "implementer",
+  REVIEW:     "reviewer",
+  DOCUMENT:   "implementer",
+  LEARN:      "memory-curator",
 };
 
 export class ProjectRun implements AgentHandler {
@@ -126,10 +205,25 @@ export class ProjectRun implements AgentHandler {
   private lastTestFailures: TestFailure[] = [];
   /** Final text of the most recent agent call, fed to the auto-steering critic. */
   private lastAgentText = "";
+  /** Inter-state handoff: what the previous state concluded, injected into the
+   *  next state's prompt so cycles carry their WHY (a rejected review otherwise
+   *  re-prompts IMPLEMENT with zero memory of what the reviewer objected to). */
+  private handoff: { from: State; content: string } | null = null;
+  /** Cumulative token spend across every agent call in this run. */
+  private totalTokens = 0;
+  /** Whether this workspace's test suite can run at all. Cached per run and
+   *  probed independently of any agent verdict: a test-engineer that reports
+   *  PASS short-circuits the deterministic run, so deriving it from there left
+   *  REVIEW still demanding a test command that cannot work. */
+  private testHarnessOk: boolean | null = null;
 
   constructor(private cfg: ProjectRunConfig) {
     this.agentDir = join(cfg.workspace, ".agent");
     mkdirSync(this.agentDir, { recursive: true });
+    // Pre-create the ADR directory so the architect never needs a `mkdir` shell
+    // call (heredoc/mkdir via bash fails on some Windows shells and sends the
+    // agent into a debugging spiral instead of writing the blueprints).
+    mkdirSync(join(this.agentDir, "decisions"), { recursive: true });
 
     const logPath = join(cfg.workspace, ".projectos", "tool-calls.jsonl");
     let bashTool;
@@ -162,7 +256,34 @@ export class ProjectRun implements AgentHandler {
   /** Clone the configured repository into the workspace, record the base SHA
    *  and switch to the dedicated work branch. No-op when gitUrl is unset. */
   private setupRepo(): void {
-    if (!this.cfg.gitUrl) return;
+    if (!this.cfg.gitUrl) {
+      // Pre-populated workspace (e.g. an external clone checked out at a
+      // specific commit): still build repo context so the agent can see the
+      // existing codebase rather than working blind.
+      if (existsSync(join(this.cfg.workspace, ".git"))) {
+        this.repoContext = buildSmartRepoContext(this.cfg.workspace, this.cfg.task);
+        this.repoTree = buildRepoTree(this.cfg.workspace);
+        // Record HEAD as the base SHA here too. Without it workspaceDiff()
+        // falls back to `git diff HEAD`, which goes blank as soon as the agent
+        // commits — so REVIEW/DOCUMENT would silently get an empty diff on
+        // exactly the harnesses that pre-populate a workspace (SWE-bench).
+        try {
+          const head = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: this.cfg.workspace, encoding: "utf8",
+          }).stdout?.trim();
+          if (head) {
+            writeFileSync(
+              join(this.agentDir, "repo.json"),
+              JSON.stringify({ base_sha: head, base_branch: null, work_branch: null }, null, 2),
+              "utf8"
+            );
+          }
+        } catch {
+          // best-effort — workspaceDiff degrades to `git diff HEAD`
+        }
+      }
+      return;
+    }
 
     const baseBranch = this.cfg.baseBranch ?? "main";
     const workBranch =
@@ -216,21 +337,136 @@ export class ProjectRun implements AgentHandler {
     return `### Existing codebase\n${this.repoTree}\n\n${EXISTING_REPO_INSTRUCTION}`;
   }
 
+  /** Architecture + implementation plan, inlined for IMPLEMENT so the agent
+   *  does not burn turns reading them back. Capped to keep input cost bounded. */
+  private framedBlueprint(): string | null {
+    const cap = 6000;
+    const sections: string[] = [];
+    for (const [label, file] of [
+      ["Architecture", "architecture.md"],
+      ["Implementation plan", "implementation-plan.md"],
+    ] as const) {
+      const p = join(this.agentDir, file);
+      if (!existsSync(p)) continue;
+      let body = readFileSync(p, "utf8").trim();
+      if (!body) continue;
+      if (body.length > cap) body = body.slice(0, cap) + "\n[... truncated; read the full file if needed]";
+      sections.push(`### ${label} (.agent/${file})\n${body}`);
+    }
+    return sections.length > 0 ? sections.join("\n\n") : null;
+  }
+
+  /** Full diff of the run's changes (committed + working tree), for REVIEW.
+   *  Reviewing without the diff forces the reviewer to rediscover the changes
+   *  with glob/read calls — slower, costlier, and it misses deletions. */
+  private workspaceDiff(cap = 8000): string | null {
+    try {
+      let base: string | null = null;
+      const repoJson = join(this.agentDir, "repo.json");
+      if (existsSync(repoJson)) {
+        base = (JSON.parse(readFileSync(repoJson, "utf8")) as { base_sha?: string }).base_sha ?? null;
+      }
+      // Intent-to-add registers untracked files in the index without staging
+      // their content, so brand-new files the agent wrote show up as additions
+      // in the diff below. Without this the reviewer never sees new files.
+      spawnSync("git", ["add", "-N", "--", "."], { cwd: this.cfg.workspace, encoding: "utf8" });
+      const args = base ? ["diff", base] : ["diff", "HEAD"];
+      const r = spawnSync("git", args, {
+        cwd: this.cfg.workspace, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+      });
+      if (r.status !== 0) return null;
+      let d = (r.stdout ?? "").trim();
+      if (!d) return null;
+      if (d.length > cap) d = d.slice(0, cap) + "\n[... diff truncated — use git_diff for the rest ...]";
+      return "### Diff of all changes in this run\n```diff\n" + d + "\n```";
+    } catch {
+      return null;
+    }
+  }
+
+  /** Can this workspace's tests run at all? Probed once per run with a cheap
+   *  collection-only pass (pytest --collect-only surfaces conftest/import
+   *  errors in seconds without executing anything). Cached for the run. */
+  private testsCanRun(): boolean {
+    if (this.testHarnessOk !== null) return this.testHarnessOk;
+    const tc = detectTestCommand(this.cfg.workspace);
+    // The probe must be FAST and must test startup, not the suite. Running the
+    // real command timed out on django (thousands of tests) and the timeout was
+    // read as "harness broken" — losing real test feedback on 38% of the
+    // benchmark, where it was finally available.
+    let probeArgs: string[];
+    if (tc.framework === "pytest") {
+      probeArgs = ["-m", "pytest", "--collect-only", "-q"];
+    } else if (/django/i.test(tc.framework)) {
+      probeArgs = ["-c", "import django"];       // the actual failure mode
+    } else if (/sympy/i.test(tc.framework)) {
+      probeArgs = ["-c", "import sympy"];
+    } else {
+      probeArgs = tc.args;
+    }
+    try {
+      const r = spawnSync(tc.cmd, probeArgs, {
+        cwd: this.cfg.workspace,
+        encoding: "utf8",
+        timeout: 90_000,
+        ...(tc.env ? { env: { ...process.env, ...tc.env } } : {}),
+      });
+      const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+      const code = r.status ?? -1;
+      const broken =
+        (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") ||
+        isTestInfraFailure(out, code, tc.framework);
+      this.testHarnessOk = !broken;
+      if (broken) {
+        this.traceSystem("TEST", {
+          decision: "test harness cannot run in this workspace",
+          probe: tc.display,
+          detail: out.slice(0, 300),
+        });
+      }
+    } catch {
+      this.testHarnessOk = false;
+    }
+    return this.testHarnessOk;
+  }
+
+  /** Render the pending handoff as a prompt section, or null. */
+  private handoffBlock(...accept: State[]): string | null {
+    if (!this.handoff || !accept.includes(this.handoff.from)) return null;
+    const label = this.handoff.from === "REVIEW"
+      ? "Reviewer feedback from the REJECTED review — fix ALL of these points"
+      : `Summary from the previous ${this.handoff.from} state`;
+    return `### ${label}\n${this.handoff.content}`;
+  }
+
   // ─── AgentHandler ──────────────────────────────────────────────────────────
 
   async onState(state: State, ctx: RunContext): Promise<MachineEvent> {
+    // Hard token budget: a run past this ceiling is looping, not progressing.
+    // Let the cheap finishing states (DOCUMENT/LEARN) complete regardless so a
+    // budget hit during review cycles still produces artifacts and lessons.
+    const budget = this.cfg.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
+    if (this.totalTokens > budget && !["DOCUMENT", "LEARN"].includes(state)) {
+      return {
+        type: "ESCALATE",
+        reason: `token budget exceeded (${this.totalTokens.toLocaleString()}/${budget.toLocaleString()} tokens) at ${state} — ` +
+          `the run was likely stuck in a loop; see the trace timeline for where the spend concentrated`,
+      };
+    }
+
     switch (state) {
-      case "INTAKE":    return this.handleIntake();
-      case "CLARIFY":   return this.handleClarify();
-      case "DESIGN":    return this.handleDesign(ctx);
-      case "PLAN":      return this.handlePlan(ctx);
-      case "IMPLEMENT": return this.handleImplement(ctx);
-      case "TEST":      return this.handleTest(ctx);
-      case "REPAIR":    return this.handleRepair(ctx);
-      case "REVIEW":    return this.handleReview(ctx);
-      case "DOCUMENT":  return this.handleDocument();
-      case "LEARN":     return this.handleLearn();
-      default:          return { type: "ESCALATE", reason: `unhandled state: ${state}` };
+      case "INTAKE":     return this.handleIntake();
+      case "CLARIFY":    return this.handleClarify();
+      case "DESIGN":     return this.handleDesign(ctx);
+      case "PLAN":       return this.handlePlan(ctx);
+      case "REPRODUCE":  return this.handleReproduce(ctx);
+      case "IMPLEMENT":  return this.handleImplement(ctx);
+      case "TEST":       return this.handleTest(ctx);
+      case "REPAIR":     return this.handleRepair(ctx);
+      case "REVIEW":     return this.handleReview(ctx);
+      case "DOCUMENT":   return this.handleDocument();
+      case "LEARN":      return this.handleLearn();
+      default:           return { type: "ESCALATE", reason: `unhandled state: ${state}` };
     }
   }
 
@@ -315,7 +551,34 @@ export class ProjectRun implements AgentHandler {
 
     await this.callAgent("architect", prompt);
 
-    const { valid, missing } = bp.validate(this.agentDir);
+    let { valid, missing } = bp.validate(this.agentDir);
+
+    // The architect occasionally writes blueprints via `bash` heredoc instead
+    // of write_file; on some shells that fails and leaves files missing/empty.
+    // Give it one corrective retry naming the exact gaps before escalating —
+    // an empty design phase otherwise yields an empty patch with no recovery.
+    if (!valid) {
+      // Remove empty leftovers so write_file (which refuses to overwrite) succeeds.
+      for (const f of missing) {
+        const p = join(this.agentDir, f);
+        if (existsSync(p)) rmSync(p, { force: true });
+      }
+      const retryPrompt = buildStatePrompt("DESIGN", this.cfg.task, {
+        context: [interviewContent, this.framedRepoContext()].filter(Boolean).join("\n\n"),
+        instructions: [
+          "Your previous attempt left required blueprint files missing or empty.",
+          `Missing or empty: ${missing.join(", ")}.`,
+          "",
+          "Write ONLY the missing files now. For each, call the write_file tool with the",
+          "exact path and non-empty content. Do NOT use bash, cat, heredoc, or mkdir —",
+          "those fail on some shells. write_file creates parent directories itself.",
+          ...missing.map((f) => `  ${this.agentDir}/${f}`),
+        ],
+      });
+      await this.callAgent("architect", retryPrompt);
+      ({ valid, missing } = bp.validate(this.agentDir));
+    }
+
     return {
       type: "PLAN_DONE",
       workUnits: valid ? await this.extractWorkUnits() : [],
@@ -388,20 +651,20 @@ export class ProjectRun implements AgentHandler {
           instructions: [
             `Work unit: **${wu.description}**`,
             "",
-            "Write tests using bun:test for THIS unit's files and run them with `bun test <file>`.",
+            `Write tests with this project's framework (${detectTestCommand(this.cfg.workspace).framework}) for THIS unit's files and run \`${detectTestCommand(this.cfg.workspace).display}\`.`,
             "- If tests pass, reply with VERDICT: PASS",
             "- If tests fail and you cannot fix them in one attempt, reply with VERDICT: FAIL",
           ],
         });
         const result = await this.callAgent("test-engineer", prompt);
-        return { passed: /VERDICT:\s*PASS/i.test(result.finalText) };
+        return { passed: parseVerdict(result.finalText, "PASS", "FAIL") === true };
       },
       repair: async (wu, attempt) => {
         const prompt = buildStatePrompt("REPAIR", task, {
           instructions: [
             `Work unit: **${wu.description}** — repair attempt ${attempt}`,
             "",
-            "Run this unit's tests with `bun test <file>` to see the failures.",
+            `Run this unit's tests with \`${detectTestCommand(this.cfg.workspace).display}\` to see the failures.`,
             "Fix the source code (not the tests) to make them pass.",
             "Confirm with another test run.",
           ],
@@ -421,30 +684,98 @@ export class ProjectRun implements AgentHandler {
           ],
         });
         const result = await this.callAgent("reviewer", prompt);
-        const approved = /VERDICT:\s*APPROVE/i.test(result.finalText);
+        const approved = parseVerdict(result.finalText, "APPROVE", "MUST_FIX") === true;
         return { approved, mustFix: approved ? [] : [result.finalText.slice(0, 500)] };
       },
     };
+  }
+
+  private async handleReproduce(ctx: RunContext): Promise<MachineEvent> {
+    // Skip REPRODUCE when there is no existing repo — brand-new projects have no
+    // failing baseline to reproduce against — or when the task is pure creation
+    // ("add a feature", "build X"): a repro test only pays for itself when there
+    // is broken behaviour to pin down first.
+    const hasExistingRepo = existsSync(join(this.cfg.workspace, ".git"));
+    if (!hasExistingRepo || !isBugFixTask(this.cfg.task)) {
+      this.traceSystem("REPRODUCE", {
+        decision: "skipped",
+        reason: hasExistingRepo ? "task is not a bug fix" : "no existing repo",
+      });
+      return { type: "REPRODUCE_SKIP" };
+    }
+
+    const wu = ctx.workUnits[0];
+    const codebase = this.framedRepoTree() ?? "";
+
+    const prompt = buildStatePrompt("REPRODUCE", this.cfg.task, {
+      context: codebase || undefined,
+      instructions: [
+        "Before implementing the fix, write a minimal test that REPRODUCES the bug or missing",
+        "behaviour described in the task. The test must:",
+        "  1. Fail on the CURRENT codebase (before any changes)",
+        "  2. Be located in a new file named `repro_test.<ext>` in the project root",
+        "  3. Use the project's existing test framework (bun:test, pytest, go test, etc.)",
+        "",
+        "Steps:",
+        "  a. Write the repro test with write_file",
+        "  b. Run it with bash — confirm it FAILS (exit code ≠ 0 means it fails as expected)",
+        "  c. Reply with REPRO: CONFIRMED if the test fails, or REPRO: SKIP if you cannot",
+        "     write a meaningful failing test for this task",
+        "",
+        wu ? `First work unit to fix: ${wu.description}` : "",
+      ].filter(Boolean),
+    });
+
+    const result = await this.callAgent("test-engineer", prompt);
+    const confirmed = /REPRO:\s*CONFIRMED/i.test(result.finalText);
+    // Either outcome lets IMPLEMENT proceed; CONFIRMED means the agent has a
+    // concrete red-test to guide the fix (and TEST will pick it up too).
+    return confirmed ? { type: "REPRODUCE_DONE" } : { type: "REPRODUCE_SKIP" };
   }
 
   private async handleImplement(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
     if (!wu) return { type: "IMPLEMENT_DONE" };
 
+    // Inject the blueprint content directly rather than only naming the files:
+    // otherwise the implementer must spend extra turns reading them back from
+    // disk (and may hit the token ceiling mid-read on a large plan).
+    const blueprint = this.framedBlueprint();
+
+    // Give the implementer the task-guided context (relevant file paths +
+    // excerpts) rather than a bare tree: it edits files it has actually seen,
+    // instead of burning turns on read_file or failing edit_file on unseen code.
+    const codebase = this.framedRepoContext() ?? this.framedRepoTree();
+
+    // A rejected review re-enters IMPLEMENT: without the reviewer's objections
+    // in the prompt, the implementer redoes the same work and the cycle spins
+    // until maxReview escalates (the 4.2M-token / $43 failure mode).
+    const reviewFeedback = this.handoffBlock("REVIEW");
+
     const prompt = buildStatePrompt("IMPLEMENT", this.cfg.task, {
-      context: this.framedRepoTree() ?? undefined,
+      context: [reviewFeedback, blueprint, codebase].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit ${ctx.workUnitIndex + 1}/${ctx.workUnits.length}: **${wu.description}**`,
         "",
+        ...(reviewFeedback
+          ? ["A reviewer REJECTED the previous attempt — address every point in the",
+             "reviewer feedback above before anything else.", ""]
+          : []),
         "Implement this work unit completely:",
         "- Write all necessary source files using write_file",
-        "- Follow the architecture.md and implementation-plan.md in .agent/",
+        "- Follow the architecture and implementation plan included above",
         "- Do not write tests yet — that happens in the TEST state",
         "- When done, summarise what you created",
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    // After a review rejection the redo must be smarter, not just retried:
+    // it now has the reviewer's objections AND deepest reasoning. Normal
+    // first-pass implements stay at the default effort.
+    const result = await this.callAgent("implementer", prompt, {
+      effort: ctx.reviewCycleCount >= 1 ? "max" : undefined,
+    });
+    this.handoff = { from: "IMPLEMENT", content: capHandoff(result.finalText) };
     return { type: "IMPLEMENT_DONE" };
   }
 
@@ -459,18 +790,33 @@ export class ProjectRun implements AgentHandler {
       this.traceSystem("TEST", { install: install.detail, ok: install.ok });
     }
 
+    // Use the project's OWN test tooling. Telling the agent to run `bun test`
+    // on a Python repo guarantees failure and burns the repair budget.
+    const tc = detectTestCommand(this.cfg.workspace);
+
     const prompt = buildStatePrompt("TEST", this.cfg.task, {
+      context: this.handoffBlock("IMPLEMENT", "REPAIR") ?? undefined,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
         "",
-        "Write tests using bun:test and run them with `bun test`.",
+        `This project's test framework is ${tc.framework}. Write tests with it and run \`${tc.display}\`.`,
+        "Prefer running only the tests covering your change — the full suite may be slow.",
         "- If tests pass, reply with VERDICT: PASS",
         "- If tests fail and you cannot fix them in one attempt, reply with VERDICT: FAIL",
       ],
     });
 
+    // If the suite cannot run at all, asking an agent to run it is pure waste:
+    // skip straight to REVIEW, which judges on the diff instead.
+    if (!this.testsCanRun()) {
+      this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+
     const result = await this.callAgent("test-engineer", prompt);
-    const passed = /VERDICT:\s*PASS/i.test(result.finalText);
+    // Robust parsing: strict `VERDICT: PASS` first, then keyword fallback. A
+    // missed/false verdict is recovered below by the deterministic test run.
+    const passed = parseVerdict(result.finalText, "PASS", "FAIL") === true;
     if (passed) {
       this.lastTestFailures = [];
       return { type: "TESTS_PASS" };
@@ -484,6 +830,14 @@ export class ProjectRun implements AgentHandler {
     if (testRun.exitCode === 0) {
       // Tests actually pass — the agent's verdict was wrong.
       this.lastTestFailures = [];
+      return { type: "TESTS_PASS" };
+    }
+    // The runner itself could not start (missing interpreter/toolchain). No
+    // amount of source repair fixes that, so do not spend the REPAIR budget.
+    if (testRun.unavailable) {
+      this.traceSystem("TEST", { decision: "test runner unavailable — skipping repair", output: testRun.output });
+      this.lastTestFailures = [];
+      this.testHarnessOk = false;
       return { type: "TESTS_PASS" };
     }
     const failures = parseTestFailures(testRun.output);
@@ -522,48 +876,77 @@ export class ProjectRun implements AgentHandler {
         "The test failures are provided as structured JSON in the context above.",
         "Each failure includes the file, line, error message, and surrounding code.",
         "Fix ONLY the source code files listed in changedFiles — never modify test files.",
-        "After fixing, run `bun test` on the affected files to confirm.",
+        `After fixing, run \`${detectTestCommand(this.cfg.workspace).display}\` on the affected tests to confirm.`,
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    // Adaptive escalation: the first repair runs at the role's default effort;
+    // a second failure has PROVEN the bug is hard, so pay for deepest reasoning
+    // only then. Cheaper than a third blind attempt at normal effort.
+    const result = await this.callAgent("implementer", prompt, {
+      effort: ctx.repairCount >= 2 ? "max" : undefined,
+    });
+    this.handoff = { from: "REPAIR", content: capHandoff(result.finalText) };
     return { type: "REPAIR_DONE" };
   }
 
   private async handleReview(ctx: RunContext): Promise<MachineEvent> {
     const wu = ctx.workUnits[ctx.workUnitIndex];
 
+    // Give the reviewer the actual diff and the implementer's summary up front:
+    // judging blind forces it to rediscover the changes tool-call by tool-call,
+    // and it never sees deletions at all.
+    const diff = this.workspaceDiff();
+    const implSummary = this.handoffBlock("IMPLEMENT", "REPAIR");
+
     const prompt = buildStatePrompt("REVIEW", this.cfg.task, {
+      context: [implSummary, diff].filter(Boolean).join("\n\n") || undefined,
       instructions: [
         `Work unit: **${wu?.description ?? "current"}**`,
         "",
         "Review the implementation:",
-        "- Use glob_files and read_file to inspect the code",
-        "- Run `bun test` to confirm tests pass",
+        ...(diff
+          ? ["- The full diff of the run's changes is provided above — review it first",
+             "- Use read_file only where you need more context around a change"]
+          : ["- Use glob_files and read_file to inspect the code"]),
+        ...(!this.testsCanRun()
+          ? [
+              "- IMPORTANT: this workspace's test suite CANNOT be run (the package is not",
+              "  built/installed here). Do NOT ask for tests to pass and do NOT reject the",
+              "  work for unrun or failing tests — judge the change on the diff alone.",
+            ]
+          : [`- Run \`${detectTestCommand(this.cfg.workspace).display}\` to confirm tests pass`]),
         "- Reply with VERDICT: APPROVE if the work is acceptable",
         "- Reply with VERDICT: MUST_FIX and list issues if it needs rework",
       ],
     });
 
     const result = await this.callAgent("reviewer", prompt);
-    const approved = /VERDICT:\s*APPROVE/i.test(result.finalText);
-    return approved
-      ? { type: "REVIEW_APPROVE", verdictProvided: true }
-      : { type: "REVIEW_MUST_FIX" };
+    const approved = parseVerdict(result.finalText, "APPROVE", "MUST_FIX") === true;
+    if (approved) {
+      this.handoff = null;
+      return { type: "REVIEW_APPROVE", verdictProvided: true };
+    }
+    // Carry the reviewer's objections into the next IMPLEMENT prompt.
+    this.handoff = { from: "REVIEW", content: capHandoff(result.finalText) };
+    return { type: "REVIEW_MUST_FIX" };
   }
 
   private async handleDocument(): Promise<MachineEvent> {
     const prompt = buildStatePrompt("DOCUMENT", this.cfg.task, {
+      context: this.workspaceDiff(4000) ?? undefined,
       instructions: [
         "Write a README.md in the workspace root covering:",
         "- What was built and why",
         "- How to run it (`bun run ...`)",
-        "- How to run the tests (`bun test`)",
+        `- How to run the tests (\`${detectTestCommand(this.cfg.workspace).display}\`)`,
         "Then git commit all remaining uncommitted files.",
       ],
     });
 
-    await this.callAgent("implementer", prompt);
+    // Writing a README from a provided diff needs no deep reasoning — "low"
+    // saves thinking tokens on every single run.
+    await this.callAgent("implementer", prompt, { effort: "low" });
     return { type: "DOCUMENT_DONE" };
   }
 
@@ -702,7 +1085,7 @@ export class ProjectRun implements AgentHandler {
     return this.memoryBlock;
   }
 
-  private async callAgent(role: Role, prompt: string) {
+  private async callAgent(role: Role, prompt: string, opts: { effort?: EffortLevel } = {}) {
     // modelOverride exists to substitute unavailable premium models (fable);
     // it must never upgrade the cost of roles already on a cheaper tier (haiku).
     // With a non-Anthropic provider, the router's claude-* ids don't exist —
@@ -779,7 +1162,8 @@ export class ProjectRun implements AgentHandler {
         tools: extraTools.length > 0 ? [...TOOL_DEFINITIONS, ...extraTools] : undefined,
         approval: this.cfg.approval,
         maxIterations: this.cfg.maxIterationsPerState ?? 20,
-        effort: ROLE_EFFORT[role],
+        effort: opts.effort ?? ROLE_EFFORT[role],
+        maxTokensPerTurn: ROLE_MAX_TOKENS[role],
         extraDispatcher,
       }
     );
@@ -798,24 +1182,31 @@ export class ProjectRun implements AgentHandler {
     });
 
     this.lastAgentText = result.finalText;
+    this.totalTokens += result.usage.inputTokens + result.usage.outputTokens;
     return result;
   }
 
   private async extractWorkUnits(): Promise<WorkUnit[]> {
-    // Parse work units from implementation-plan.md
+    // Pure-code parsing — eliminates a full architect LLM call per run.
+    // The architect writes a predictable markdown format (numbered list,
+    // ## headers, or bullet points); any of the three is handled below.
     const planPath = join(this.agentDir, "implementation-plan.md");
     if (!existsSync(planPath)) return [{ id: "wu-1", description: this.cfg.task }];
-
-    const prompt = [
-      "Read the implementation plan below and extract an ordered list of work units.",
-      "Reply with JSON only — an array of objects with id (string) and description (string).",
-      "Example: [{\"id\":\"wu-1\",\"description\":\"Set up project structure\"}]",
-      "",
-      "Use read_file to load: " + planPath,
-    ].join("\n");
-
-    const result = await this.callAgent("architect", prompt);
-    return parseWorkUnits(result.finalText, this.cfg.task);
+    const content = readFileSync(planPath, "utf8");
+    const units = parseImplementationPlan(content, this.cfg.task);
+    // A bug fix is one change, not a programme of work. Every extra unit costs
+    // a full IMPLEMENT + REVIEW cycle, and django-10914 was planned as 8 units
+    // for a one-line default change. The DESIGN prompt already asks for 1-3;
+    // this enforces it where the cost is actually incurred.
+    if (isBugFixTask(this.cfg.task) && units.length > 3) {
+      this.traceSystem("PLAN", {
+        decision: "capped work units for a bug-fix task",
+        planned: units.length,
+        kept: 3,
+      });
+      return units.slice(0, 3);
+    }
+    return units;
   }
 
   // ─── Entry point ───────────────────────────────────────────────────────────
@@ -824,7 +1215,7 @@ export class ProjectRun implements AgentHandler {
     this.setupRepo();
     const ctx = makeContext([], this.cfg.loopBounds);
     try {
-      return await runAgentLoop(ctx, {
+      const result = await runAgentLoop(ctx, {
         runId: this.cfg.runId,
         db: this.cfg.db,
         handler: this,
@@ -841,6 +1232,28 @@ export class ProjectRun implements AgentHandler {
             }
           : {}),
       });
+
+      // Escalated runs are the most informative ones — record WHY, at zero
+      // token cost, so the next run on this project starts warned.
+      if (result.finalContext.state === "ESCALATED" && result.finalContext.escalationReason) {
+        try {
+          const globalMem = new GlobalMemory({ project: projectKeyFor(this.cfg.workspace) });
+          globalMem.appendLesson(
+            escalationLesson(
+              this.cfg.task,
+              this.cfg.runId,
+              result.finalContext.escalationReason,
+              // last checkpoint before ESCALATED is the state that failed
+              "ESCALATED"
+            ),
+            "project"
+          );
+        } catch {
+          // memory is best-effort
+        }
+      }
+
+      return result;
     } finally {
       await this.browserSession?.close();
       this.browserSession = null;
@@ -848,23 +1261,58 @@ export class ProjectRun implements AgentHandler {
   }
 }
 
-function parseWorkUnits(text: string, fallbackTask: string): WorkUnit[] {
-  try {
-    const match = /\[[\s\S]*?\]/.exec(text);
-    if (match) {
-      const parsed = JSON.parse(match[0]) as unknown[];
-      const units = parsed.filter(
-        (u): u is WorkUnit =>
-          typeof u === "object" && u !== null &&
-          typeof (u as WorkUnit).id === "string" &&
-          typeof (u as WorkUnit).description === "string"
-      );
-      if (units.length > 0) return units.slice(0, 8);
+/** Classify a task as a bug fix (something is currently broken and can be
+ *  reproduced) vs pure creation (nothing to reproduce yet). SWE-bench issues
+ *  are overwhelmingly bug reports — they name broken behaviour explicitly.
+ *  Exported for unit testing. */
+export function isBugFixTask(task: string): boolean {
+  const t = task.toLowerCase();
+  const bugSignals =
+    /\b(bug|fix|fixes|broken|breaks?|crash(es|ed)?|error|exception|traceback|fail(s|ed|ing|ure)?|incorrect|wrong(ly)?|unexpected|regression|does not work|doesn't work|not working|should (not|be)|instead of)\b/;
+  const pureCreationSignals =
+    /^\s*(add|create|build|implement|write|set up|setup|generate|make)\b/;
+  if (bugSignals.test(t)) return true;
+  if (pureCreationSignals.test(t)) return false;
+  // Ambiguous — default to reproducing: a wasted repro attempt costs one cheap
+  // test-engineer call; a skipped repro on a real bug costs the whole run.
+  return true;
+}
+
+/** Parse work units from implementation-plan.md without an LLM call.
+ *  Handles the three formats the architect naturally produces:
+ *    1. Numbered list  "1. Description" / "1) Description"
+ *    2. Markdown headers  "## Work Unit 2: Do X" / "### Step 3"
+ *    3. Bold bullet  "- **Title**: description" / "- **Title**"
+ *  Picks the pattern with the most matches. Exported for unit testing. */
+export function parseImplementationPlan(content: string, fallbackTask: string): WorkUnit[] {
+  function extractMatches(re: RegExp, src: string): string[] {
+    const out: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      const text = (m[1] ?? "").replace(/\*{1,2}/g, "").trim();
+      // Structural headings are not work units. Observed on django-10914: the
+      // plan yielded 8 "units", three of them literally "Deliverable" — each
+      // costing a full IMPLEMENT + REVIEW cycle.
+      const isHeading =
+        /^(implementation|test|work unit|step|phase|overview|summary|note|introduction|deliverable|acceptance|rationale|files?|scope|goal|context|dependencies|risks?)\b/i
+          .test(text) && text.length < 40;
+      if (text.length > 5 && !isHeading) out.push(text);
     }
-  } catch {
-    // fall through to fallback
+    return out;
   }
-  return [{ id: "wu-1", description: fallbackTask }];
+
+  const candidates = [
+    extractMatches(/^(?:\d+[.)]\s+)(.+)/gm, content),
+    extractMatches(/^#{2,3}\s+(?:Work Unit\s*\d*:?\s*|\d+[.)]\s*)?(.+)/gm, content),
+    extractMatches(/^[-*]\s+(?:\*{1,2})?(.+?)(?:\*{1,2})?(?::.*)?$/gm, content),
+  ].filter((c) => c.length >= 1);
+
+  const best = candidates.sort((a, b) => b.length - a.length)[0] ?? [];
+  const units: WorkUnit[] = best
+    .slice(0, 8)
+    .map((desc, i) => ({ id: `wu-${i + 1}`, description: desc }));
+
+  return units.length > 0 ? units : [{ id: "wu-1", description: fallbackTask }];
 }
 
 function buildStatePrompt(

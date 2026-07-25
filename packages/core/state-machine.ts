@@ -3,6 +3,7 @@ export const STATES = [
   "CLARIFY",
   "DESIGN",
   "PLAN",
+  "REPRODUCE",
   "IMPLEMENT",
   "TEST",
   "REPAIR",
@@ -42,6 +43,8 @@ export type MachineEvent =
   | { type: "CLARIFY_DONE" }
   | { type: "DESIGN_DONE" }
   | { type: "PLAN_DONE"; workUnits: WorkUnit[]; blueprintValidated: boolean }
+  | { type: "REPRODUCE_DONE" }
+  | { type: "REPRODUCE_SKIP" }
   | { type: "IMPLEMENT_DONE"; allUnitsComplete?: boolean }
   | { type: "TESTS_PASS" }
   | { type: "TESTS_FAIL" }
@@ -127,6 +130,12 @@ export function transition(ctx: RunContext, event: MachineEvent): RunContext {
         if (ctx.workUnits.length === 0 || event.allUnitsComplete) {
           return { ...ctx, state: "DOCUMENT" };
         }
+        return { ...ctx, state: "REPRODUCE" };
+      }
+      break;
+
+    case "REPRODUCE":
+      if (event.type === "REPRODUCE_DONE" || event.type === "REPRODUCE_SKIP") {
         return { ...ctx, state: "IMPLEMENT" };
       }
       break;

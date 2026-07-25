@@ -99,6 +99,11 @@ describe("computeCost", () => {
     expect(result.byModel["gpt-5.5"].usd).toBeCloseTo(1.4, 6);
   });
 
+  it("computes non-zero cost for gpt-5.4", () => {
+    const result = computeCost([{ model: "gpt-5.4", inputTokens: 100_000, outputTokens: 10_000 }]);
+    expect(result.totalUsd).toBeCloseTo(1.4, 6);
+  });
+
   it("treats unknown model as zero cost", () => {
     const result = computeCost([{ model: "gpt-unknown", inputTokens: 1_000_000, outputTokens: 1_000_000 }]);
     expect(result.totalUsd).toBe(0);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runAgent, compactMessages, compactMessagesSmart, DEFAULT_COMPACTION, reasoningParams } from "./agent-runner";
+import { runAgent, compactMessages, compactMessagesSmart, DEFAULT_COMPACTION, reasoningParams, withHistoryCacheBreakpoint } from "./agent-runner";
 import type {
   CreateMessageFn,
   MessageParam,
@@ -411,6 +411,152 @@ describe("runAgent — compaction integration", () => {
   });
 });
 
+describe("runAgent — resilience", () => {
+  it("retries a transient 5xx then succeeds", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        const err = new Error("server error") as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      return {
+        content: [{ type: "text", text: "recovered" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "hi" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+    });
+    expect(calls).toBe(2);
+    expect(result.finalText).toBe("recovered");
+    rmSync(TMP, { recursive: true, force: true });
+  }, 15_000);
+
+  it("does NOT retry a deterministic 400", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      const err = new Error("bad request") as Error & { status: number };
+      err.status = 400;
+      throw err;
+    };
+    await expect(
+      runAgent([{ role: "user", content: "hi" }], {
+        createMessage: create,
+        model: "claude-sonnet-4-6",
+        toolContext: ctx,
+      })
+    ).rejects.toThrow(/bad request/);
+    expect(calls).toBe(1);
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("prompts the model to continue when a turn is cut off by max_tokens", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [{ type: "text", text: "partial..." }],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+      return {
+        content: [{ type: "text", text: "...complete" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "write a lot" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+    });
+    expect(calls).toBe(2);
+    expect(result.finalText).toBe("...complete");
+    // a continuation nudge was inserted between the two assistant turns
+    const nudge = result.messages.find(
+      (m) => typeof m.content === "string" && m.content.includes("cut off at the token limit")
+    );
+    expect(nudge).toBeDefined();
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("warns the model after a tool call fails identically 3 times", async () => {
+    const ctx = makeFakeCtx();
+    const seenResults: string[] = [];
+    // Always returns the same failing bash call; deny it so it always errors.
+    const create: CreateMessageFn = async (params) => {
+      const last = params.messages[params.messages.length - 1];
+      if (Array.isArray(last.content)) {
+        for (const b of last.content) {
+          if (b.type === "tool_result") seenResults.push(b.content);
+        }
+      }
+      return {
+        content: [{ type: "tool_use", id: "t", name: "bash", input: { command: "broken" } }],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    await runAgent([{ role: "user", content: "go" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+      maxIterations: 5,
+      approval: autoDeny,
+    });
+    // by the 3rd identical failure the loop-guard nudge is appended
+    expect(seenResults.some((c) => c.includes("loop guard"))).toBe(true);
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("never throws out of tool dispatch — surfaces an error tool_result instead", async () => {
+    const ctx = makeFakeCtx();
+    let calls = 0;
+    const create: CreateMessageFn = async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "x" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      }
+      return {
+        content: [{ type: "text", text: "saw the error" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const result = await runAgent([{ role: "user", content: "go" }], {
+      createMessage: create,
+      model: "claude-sonnet-4-6",
+      toolContext: ctx,
+      extraDispatcher: async () => {
+        throw new Error("dispatcher blew up");
+      },
+    });
+    // the loop survived and the assistant tool_use has a matching tool_result
+    const toolResult = result.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result") as ToolResultBlock | undefined;
+    expect(toolResult?.is_error).toBe(true);
+    expect(toolResult?.content).toContain("dispatcher blew up");
+    expect(result.finalText).toBe("saw the error");
+    rmSync(TMP, { recursive: true, force: true });
+  });
+});
+
 describe("reasoningParams", () => {
   it("fable gets adaptive thinking, effort defaults to high", () => {
     expect(reasoningParams("claude-fable-5")).toEqual({
@@ -475,5 +621,42 @@ describe("compactMessagesSmart", () => {
     const msgs = bigMsgs(10);
     const out = await compactMessagesSmart(msgs, { maxChars: 50_000, keepLastTurns: 2 });
     expect(out.length).toBe(msgs.length);
+  });
+});
+
+describe("withHistoryCacheBreakpoint", () => {
+  it("marks the last block of the final message and leaves the input untouched", () => {
+    const msgs = [
+      { role: "user" as const, content: "hello" },
+      { role: "assistant" as const, content: [
+        { type: "text" as const, text: "thinking" },
+        { type: "tool_use" as const, id: "t1", name: "read", input: {} },
+      ] },
+    ];
+    const out = withHistoryCacheBreakpoint(msgs);
+    const lastBlocks = out[out.length - 1].content as any[];
+    expect(lastBlocks[lastBlocks.length - 1].cache_control).toEqual({ type: "ephemeral" });
+    // earlier block untouched
+    expect(lastBlocks[0].cache_control).toBeUndefined();
+    // original input not mutated
+    expect((msgs[1].content as any[])[1].cache_control).toBeUndefined();
+  });
+
+  it("wraps a trailing string-content message into a cached text block", () => {
+    const msgs = [
+      { role: "user" as const, content: "first" },
+      { role: "user" as const, content: "do the thing" },
+    ];
+    const out = withHistoryCacheBreakpoint(msgs);
+    const blocks = out[1].content as any[];
+    expect(blocks[0]).toEqual({ type: "text", text: "do the thing", cache_control: { type: "ephemeral" } });
+    expect(typeof msgs[1].content).toBe("string"); // original untouched
+  });
+
+  it("returns the input unchanged for an empty or single-message history", () => {
+    const empty: any[] = [];
+    expect(withHistoryCacheBreakpoint(empty)).toBe(empty);
+    const single = [{ role: "user" as const, content: "solo" }];
+    expect(withHistoryCacheBreakpoint(single)).toBe(single);
   });
 });

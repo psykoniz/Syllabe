@@ -52,18 +52,165 @@ export function ensureNodeModules(workspace: string): InstallResult {
 export interface TestRunResult {
   exitCode: number;
   output: string;
+  /** True when the runner itself could not be executed (interpreter missing).
+   *  Distinct from "tests failed" — repairing source code cannot fix it. */
+  unavailable?: boolean;
 }
 
-/** Run `bun test` in the workspace and capture combined output. */
+export interface TestCommand {
+  cmd: string;
+  args: string[];
+  /** How to write the command in a prompt, e.g. "python -m pytest" */
+  display: string;
+  /** Framework name for "write tests using X" instructions */
+  framework: string;
+  /** Extra env the runner needs (django's runtests.py needs the repo on
+   *  PYTHONPATH to import the in-tree package). */
+  env?: Record<string, string>;
+}
+
+/** Detect the project's real test command from its manifest files.
+ *  Hardcoding `bun test` made TEST unconditionally fail on every non-JS repo
+ *  (all of SWE-bench is Python): the command is meaningless there, so the run
+ *  burned its whole REPAIR budget "fixing" a patch that was never the problem. */
+export function detectTestCommand(workspace: string): TestCommand {
+  const has = (...names: string[]) => names.some((n) => existsSync(join(workspace, n)));
+
+  // Project-specific runners MUST be checked before the generic pytest branch:
+  // these repos also ship setup.py/pyproject.toml, so a manifest-only check
+  // picks pytest and is simply wrong. Commands mirror the official SWE-bench
+  // specs (swebench.harness.constants.MAP_REPO_VERSION_TO_SPECS), which cover
+  // ~69% of SWE-bench Lite between django, sympy and sphinx.
+  if (has("tests/runtests.py")) {
+    // django: its suite is driven by tests/runtests.py, never bare pytest.
+    const args = ["tests/runtests.py", "--verbosity", "2", "--parallel", "1"];
+    if (has("tests/test_sqlite.py")) args.push("--settings=test_sqlite");
+    return {
+      cmd: "python",
+      args,
+      // PYTHONPATH=. is required: runtests.py imports the in-tree django, and
+      // without it dies with "Django module not found" before any test runs.
+      display: `PYTHONPATH=. python ${args.join(" ")}`,
+      framework: "django test runner (tests/runtests.py)",
+      env: { PYTHONPATH: "." },
+    };
+  }
+  if (has("bin/test")) {
+    // sympy: custom runner; accepts file/module paths as arguments.
+    return {
+      cmd: "python",
+      args: ["bin/test"],
+      display: "PYTHONPATH=. python bin/test",
+      framework: "sympy test runner (bin/test)",
+      env: { PYTHONPATH: "." },
+    };
+  }
+
+  if (has("pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini", "conftest.py")) {
+    return { cmd: "python", args: ["-m", "pytest", "-x", "-q"], display: "python -m pytest", framework: "pytest" };
+  }
+  if (has("go.mod")) {
+    return { cmd: "go", args: ["test", "./..."], display: "go test ./...", framework: "go test" };
+  }
+  if (has("Cargo.toml")) {
+    return { cmd: "cargo", args: ["test"], display: "cargo test", framework: "cargo test" };
+  }
+  if (has("Gemfile", ".rspec")) {
+    return { cmd: "bundle", args: ["exec", "rspec"], display: "bundle exec rspec", framework: "RSpec" };
+  }
+  if (has("pom.xml")) {
+    return { cmd: "mvn", args: ["-q", "test"], display: "mvn test", framework: "JUnit" };
+  }
+  // JS/TS (and the fallback): bun is this project's own runner.
+  return { cmd: process.execPath || "bun", args: ["test"], display: "bun test", framework: "bun:test" };
+}
+
+/** Signatures of a test harness that could not run at all — as opposed to a
+ *  test suite that ran and reported failures. Editing source cannot fix these,
+ *  so sending them to REPAIR burns the whole repair budget for nothing. */
+const INFRA_FAILURE_PATTERNS = [
+  /ImportError while loading conftest/i,
+  /Error importing plugin/i,          // pytest plugin loader died at startup
+  /ERROR collecting/i,
+  /INTERNALERROR/i,
+  /broken installation/i,
+  /error: Cannot find package/i,      // bun: deps not installed
+  /can't open file|No such file or directory/i,
+  /command not found/i,
+];
+
+/** Evidence that pytest actually reached collection and ran something. Their
+ *  absence means it died at startup, whatever the exit code.
+ *  Deliberately generous: mistaking a real failure for an infra problem skips
+ *  repairs that were needed, which is worse than the reverse — and tool output
+ *  is truncated, so a summary line can legitimately be missing. */
+const PYTEST_RAN_PATTERNS = [
+  /collected \d+ item/i,
+  /\d+ (passed|failed|error|skipped|xfailed|deselected)/i,
+  /no tests ran/i,
+  /FAILED \S+::/,                     // per-test failure line
+  /^E\s+\w/m,                         // pytest assertion detail lines
+  /assert /,                          // an assertion was evaluated
+];
+
+/** Evidence that a non-pytest Python runner (django/sympy) reached its tests. */
+const PY_RUNNER_RAN_PATTERNS = [
+  /Ran \d+ test/i,                 // unittest / django
+  /Testing against Django/i,       // django runtests.py banner
+  /\bFAIL(ED)?\b:/,                // unittest failure header
+  /tests finished/i,               // sympy summary
+  /\d+ (passed|failed)/i,
+];
+
+/** True when the failure is the harness itself, not the code under test. */
+export function isTestInfraFailure(
+  output: string,
+  exitCode: number,
+  framework: string
+): boolean {
+  if (INFRA_FAILURE_PATTERNS.some((re) => re.test(output))) return true;
+  // Non-pytest Python runners (django, sympy): a startup traceback with no
+  // sign that tests ran means the harness died, not that the code is wrong.
+  if (/django|sympy/i.test(framework) && exitCode !== 0) {
+    if (!PY_RUNNER_RAN_PATTERNS.some((re) => re.test(output))) return true;
+  }
+  if (framework === "pytest") {
+    // Exit codes: 0 ok | 1 tests failed | 2 interrupted | 3 internal error |
+    // 4 usage error | 5 nothing collected. Anything but 0/1 is infrastructure.
+    if (exitCode !== 0 && exitCode !== 1) return true;
+    // Exit code 1 is NOT reliably a test failure: a plugin that fails to
+    // import at startup also exits 1 (astropy-6938). The robust signal is
+    // whether pytest ever reached collection — this catches signatures we
+    // have never seen, instead of needing one pattern per failure mode.
+    if (exitCode === 1 && !PYTEST_RAN_PATTERNS.some((re) => re.test(output))) return true;
+  }
+  return false;
+}
+
+/** Run the project's own test command in the workspace and capture output. */
 export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestRunResult {
-  const r = spawnSync(process.execPath || "bun", ["test"], {
+  const tc = detectTestCommand(workspace);
+  const r = spawnSync(tc.cmd, tc.args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: timeoutMs,
+    ...(tc.env ? { env: { ...process.env, ...tc.env } } : {}),
   });
+  // A missing interpreter (ENOENT) is not a test failure — surface it as such
+  // so the caller does not send the agent into a pointless repair loop.
+  if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") {
+    return {
+      exitCode: -1,
+      output: `[test runner unavailable: ${tc.display} — ${tc.cmd} not found]`,
+      unavailable: true,
+    };
+  }
+  const exitCode = r.status ?? -1;
+  const output = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
   return {
-    exitCode: r.status ?? -1,
-    output: `${r.stdout ?? ""}\n${r.stderr ?? ""}`,
+    exitCode,
+    output,
+    unavailable: exitCode !== 0 && isTestInfraFailure(output, exitCode, tc.framework),
   };
 }
 

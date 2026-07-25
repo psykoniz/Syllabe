@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { redactGitUrl, buildRepoContext, buildRepoTree } from "./repo-context";
+import { redactGitUrl, buildRepoContext, buildRepoTree, findRelevantFiles, relevantDirTree, extractSignatures, buildRepoMap, extractImports, resolveImport, pageRank, rankRepoFiles } from "./repo-context";
+import { parseImplementationPlan, isBugFixTask, parseVerdict, capHandoff, escalationLesson } from "./project-run";
+import { detectTestCommand, isTestInfraFailure } from "./workspace-runner";
 
 describe("redactGitUrl", () => {
   it("strips user:token from https URLs", () => {
@@ -88,6 +90,47 @@ describe("buildRepoContext", () => {
   });
 });
 
+describe("findRelevantFiles", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "relevant-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it("finds Python source files matching a keyword (was JS/TS-only)", () => {
+    mkdirSync(join(dir, "astropy", "modeling"), { recursive: true });
+    writeFileSync(join(dir, "astropy", "modeling", "separable.py"), "def separability_matrix():\n    pass\n");
+    const files = findRelevantFiles(dir, ["separability"]);
+    expect(files).toContain("astropy/modeling/separable.py");
+  });
+
+  it("finds Go and Rust sources too", () => {
+    writeFileSync(join(dir, "main.go"), "package main // widget");
+    writeFileSync(join(dir, "lib.rs"), "// widget impl");
+    const files = findRelevantFiles(dir, ["widget"]);
+    expect(files).toContain("main.go");
+    expect(files).toContain("lib.rs");
+  });
+});
+
+describe("relevantDirTree", () => {
+  it("renders ancestor dirs as a nested sub-tree", () => {
+    const out = relevantDirTree([
+      "astropy/modeling/separable.py",
+      "astropy/modeling/core.py",
+      "django/forms/fields.py",
+    ]);
+    expect(out).toContain("astropy/");
+    expect(out).toContain("  modeling/");
+    expect(out).toContain("    separable.py");
+    expect(out).toContain("    core.py");
+    expect(out).toContain("django/");
+    expect(out).toContain("    fields.py");
+  });
+
+  it("is empty for no files", () => {
+    expect(relevantDirTree([])).toBe("");
+  });
+});
+
 describe("buildRepoTree", () => {
   it("returns tree only, no README section", () => {
     const dir = mkdtempSync(join(tmpdir(), "repo-tree-"));
@@ -100,5 +143,323 @@ describe("buildRepoTree", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("extractSignatures", () => {
+  it("extracts TypeScript exports", () => {
+    const src = `export function foo(a: string): void {}\nexport class Bar {}\nconst x = 1;\n`;
+    const sigs = extractSignatures("foo.ts", src);
+    expect(sigs.some((s) => s.includes("foo"))).toBe(true);
+    expect(sigs.some((s) => s.includes("Bar"))).toBe(true);
+  });
+
+  it("extracts Python defs", () => {
+    const src = `def separability_matrix(x):\n    pass\nclass Model:\n    pass\n`;
+    const sigs = extractSignatures("sep.py", src);
+    expect(sigs.some((s) => s.includes("separability_matrix"))).toBe(true);
+    expect(sigs.some((s) => s.includes("Model"))).toBe(true);
+  });
+
+  it("returns empty for unknown extension", () => {
+    expect(extractSignatures("binary.bin", "abc")).toEqual([]);
+  });
+});
+
+describe("buildRepoMap", () => {
+  it("renders symbol signatures for relevant files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "repo-map-"));
+    try {
+      writeFileSync(join(dir, "foo.ts"), `export function greet(name: string) {}\nexport class Greeter {}\n`);
+      const map = buildRepoMap(dir, ["foo.ts"]);
+      expect(map).toContain("foo.ts:");
+      expect(map).toContain("greet");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("parseImplementationPlan", () => {
+  it("parses numbered list", () => {
+    const md = `# Plan\n1. Set up project structure\n2. Write the parser\n3. Add tests\n`;
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBe(3);
+    expect(units[0].description).toContain("project structure");
+  });
+
+  it("parses markdown headers", () => {
+    const md = `## Step 1: Create the CLI entry point\n## Step 2: Add argument parsing\n`;
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("falls back to task when plan is empty", () => {
+    const units = parseImplementationPlan("", "do the thing");
+    expect(units).toEqual([{ id: "wu-1", description: "do the thing" }]);
+  });
+});
+
+describe("import graph + PageRank ranking", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "rank-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it("extractImports handles JS/TS and Python", () => {
+    expect(extractImports("a.ts", `import { x } from "./util";\nconst y = require("../lib/y");`))
+      .toEqual(["./util", "../lib/y"]);
+    expect(extractImports("a.py", `from astropy.modeling import core\nimport numpy`))
+      .toEqual(["astropy.modeling", "numpy"]);
+  });
+
+  it("resolveImport maps relative and dotted specifiers to repo files", () => {
+    const files = new Set(["src/util.ts", "astropy/modeling/core.py", "pkg/__init__.py"]);
+    expect(resolveImport("./util", "src/main.ts", files)).toBe("src/util.ts");
+    expect(resolveImport("astropy.modeling.core", "x.py", files)).toBe("astropy/modeling/core.py");
+    expect(resolveImport("pkg", "x.py", files)).toBe("pkg/__init__.py");
+    expect(resolveImport("numpy", "x.py", files)).toBeNull();
+    expect(resolveImport("@scope/pkg", "src/main.ts", files)).toBeNull();
+  });
+
+  it("rankRepoFiles surfaces graph neighbours of the seed files", () => {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    // seed.ts imports helper.ts; unrelated.ts is disconnected
+    writeFileSync(join(dir, "src", "seed.ts"), `import { h } from "./helper";\nexport function widget() {}`);
+    writeFileSync(join(dir, "src", "helper.ts"), `export function h() {}`);
+    writeFileSync(join(dir, "src", "unrelated.ts"), `export function nothing() {}`);
+    const ranked = rankRepoFiles(dir, ["src/seed.ts"], 10);
+    expect(ranked[0]).toBe("src/seed.ts");
+    expect(ranked).toContain("src/helper.ts");
+    // helper (connected to the seed) must outrank unrelated (disconnected)
+    expect(ranked.indexOf("src/helper.ts")).toBeLessThan(
+      ranked.includes("src/unrelated.ts") ? ranked.indexOf("src/unrelated.ts") : Infinity
+    );
+  });
+
+  it("pageRank concentrates mass on seeds and their neighbours", () => {
+    const files = ["a", "b", "c"];
+    const edges = new Map([["a", new Set(["b"])]]);
+    const rank = pageRank(files, edges, ["a"]);
+    expect(rank.get("a")! + rank.get("b")!).toBeGreaterThan(rank.get("c")!);
+  });
+});
+
+describe("isBugFixTask", () => {
+  it("detects bug reports", () => {
+    expect(isBugFixTask("separability_matrix does not compute separability correctly for nested CompoundModels")).toBe(true);
+    expect(isBugFixTask("Fix the crash when parsing empty config")).toBe(true);
+    expect(isBugFixTask("TypeError raised instead of ValueError")).toBe(true);
+  });
+
+  it("detects pure creation tasks", () => {
+    expect(isBugFixTask("Add a --version flag to the CLI")).toBe(false);
+    expect(isBugFixTask("Create a REST API for user management")).toBe(false);
+  });
+
+  it("defaults ambiguous tasks to reproduce", () => {
+    expect(isBugFixTask("The parser needs updating for the new format")).toBe(true);
+  });
+});
+
+describe("extractSignatures — bare class methods", () => {
+  it("captures unmodified TS class methods and skips control flow", () => {
+    const src = [
+      "class Runner {",
+      "  run(command: string): BashResult {",
+      "    if (foo) {",
+      "      while (bar) {",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+    const sigs = extractSignatures("runner.ts", src);
+    expect(sigs.some((s) => s.includes("run(command"))).toBe(true);
+    expect(sigs.some((s) => s.startsWith("if") || s.startsWith("while"))).toBe(false);
+  });
+});
+
+describe("parseVerdict", () => {
+  it("parses strict VERDICT lines", () => {
+    expect(parseVerdict("done.\nVERDICT: PASS", "PASS", "FAIL")).toBe(true);
+    expect(parseVerdict("VERDICT: FAIL — two tests red", "PASS", "FAIL")).toBe(false);
+    expect(parseVerdict("VERDICT: MUST_FIX\n- issue", "APPROVE", "MUST_FIX")).toBe(false);
+    expect(parseVerdict("VERDICT: MUST FIX (spaces)", "APPROVE", "MUST_FIX")).toBe(false);
+  });
+
+  it("falls back to keyword scan when the strict form is missing", () => {
+    expect(parseVerdict("All 12 tests pass, so I consider this a PASS.", "PASS", "FAIL")).toBe(true);
+    expect(parseVerdict("Given the issues above I must say: MUST FIX", "APPROVE", "MUST_FIX")).toBe(false);
+    expect(parseVerdict("Everything looks good — APPROVE", "APPROVE", "MUST_FIX")).toBe(true);
+  });
+
+  it("returns null when no keyword appears", () => {
+    expect(parseVerdict("I wrote some tests.", "PASS", "FAIL")).toBeNull();
+  });
+
+  it("uses the LAST keyword when both appear", () => {
+    expect(parseVerdict("Earlier attempts would FAIL but now: PASS", "PASS", "FAIL")).toBe(true);
+  });
+});
+
+describe("capHandoff", () => {
+  it("passes short text through trimmed", () => {
+    expect(capHandoff("  summary  ")).toBe("summary");
+  });
+  it("truncates long text with a marker", () => {
+    const out = capHandoff("x".repeat(5000));
+    expect(out.length).toBeLessThan(2500);
+    expect(out).toContain("[... handoff truncated ...]");
+  });
+});
+
+describe("escalationLesson", () => {
+  it("builds a zero-LLM lesson from the escalation reason", () => {
+    const l = escalationLesson(
+      "Add a stats command to the CLI",
+      "run-123",
+      "max review cycles (2) exceeded",
+      "ESCALATED"
+    );
+    expect(l.approved).toBe(true);
+    expect(l.trigger).toContain("stats");
+    expect(l.content).toContain("max review cycles");
+    expect(l.runId).toBe("run-123");
+  });
+
+  it("falls back to a generic trigger for short tasks", () => {
+    const l = escalationLesson("fix it", "r", "reason", "ESCALATED");
+    expect(l.trigger.length).toBeGreaterThan(0);
+  });
+});
+
+describe("detectTestCommand", () => {
+  const mk = (files: string[]) => {
+    const d = mkdtempSync(join(tmpdir(), "tc-"));
+    for (const f of files) writeFileSync(join(d, f), "");
+    return d;
+  };
+
+  it("detects pytest for Python repos (SWE-bench is all Python)", () => {
+    expect(detectTestCommand(mk(["pyproject.toml"])).framework).toBe("pytest");
+    expect(detectTestCommand(mk(["setup.py"])).display).toBe("python -m pytest");
+    expect(detectTestCommand(mk(["tox.ini"])).framework).toBe("pytest");
+  });
+
+  it("detects go, rust and JS toolchains", () => {
+    expect(detectTestCommand(mk(["go.mod"])).display).toBe("go test ./...");
+    expect(detectTestCommand(mk(["Cargo.toml"])).display).toBe("cargo test");
+    expect(detectTestCommand(mk(["package.json"])).framework).toBe("bun:test");
+  });
+
+  it("falls back to bun test when nothing matches", () => {
+    expect(detectTestCommand(mk(["README.md"])).display).toBe("bun test");
+  });
+
+  it("prefers Python over a stray package.json (Python repos often ship one)", () => {
+    expect(detectTestCommand(mk(["pyproject.toml", "package.json"])).framework).toBe("pytest");
+  });
+});
+
+describe("isTestInfraFailure", () => {
+  it("flags a broken pytest harness (unbuilt package — the astropy case)", () => {
+    const out = "ImportError while loading conftest '/tmp/x/conftest.py'.\nE UserWarning: could not determine astropy package version; this indicates a broken installation";
+    expect(isTestInfraFailure(out, 4, "pytest")).toBe(true);
+  });
+
+  it("uses pytest exit codes: only 1 is a genuine test failure", () => {
+    expect(isTestInfraFailure("FAILED t.py::x - assert 1 == 2", 1, "pytest")).toBe(false);
+    expect(isTestInfraFailure("no tests ran", 5, "pytest")).toBe(true);  // nothing collected
+    expect(isTestInfraFailure("interrupted", 3, "pytest")).toBe(true);   // internal error
+  });
+
+  it("flags missing dependencies for bun too", () => {
+    expect(isTestInfraFailure("error: Cannot find package 'minimatch'", 1, "bun:test")).toBe(true);
+  });
+
+  it("does not flag a passing run", () => {
+    expect(isTestInfraFailure("2 passed", 0, "pytest")).toBe(false);
+  });
+});
+
+describe("isTestInfraFailure — generalized pytest detection", () => {
+  it("catches the plugin-loader failure that exits 1 (astropy-6938)", () => {
+    const out = 'ImportError: Error importing plugin "astropy.tests.plugins.config": astropy';
+    expect(isTestInfraFailure(out, 1, "pytest")).toBe(true);
+  });
+
+  it("catches UNKNOWN signatures: exit 1 but pytest never reached collection", () => {
+    expect(isTestInfraFailure("Traceback...\nSomeNeverSeenError: boom", 1, "pytest")).toBe(true);
+  });
+
+  it("still treats a real test failure as repairable", () => {
+    expect(isTestInfraFailure("collected 12 items\n1 failed, 11 passed", 1, "pytest")).toBe(false);
+    expect(isTestInfraFailure("3 failed, 40 passed", 1, "pytest")).toBe(false);
+  });
+});
+
+describe("detectTestCommand — project-specific runners (69% of SWE-bench Lite)", () => {
+  const mk = (files: string[]) => {
+    const d = mkdtempSync(join(tmpdir(), "runner-"));
+    for (const f of files) {
+      const full = join(d, f);
+      mkdirSync(join(full, ".."), { recursive: true });
+      writeFileSync(full, "");
+    }
+    return d;
+  };
+
+  it("detects django's runtests.py, not pytest (django ships setup.py too)", () => {
+    const t = detectTestCommand(mk(["tests/runtests.py", "setup.py", "pyproject.toml"]));
+    expect(t.framework).toContain("django");
+    expect(t.args).toContain("tests/runtests.py");
+    // runtests.py cannot import the in-tree package without this
+    expect(t.env?.PYTHONPATH).toBe(".");
+  });
+
+  it("adds --settings=test_sqlite only when that settings file exists", () => {
+    expect(detectTestCommand(mk(["tests/runtests.py", "tests/test_sqlite.py"])).display)
+      .toContain("--settings=test_sqlite");
+    expect(detectTestCommand(mk(["tests/runtests.py"])).display)
+      .not.toContain("--settings");
+  });
+
+  it("detects sympy's bin/test over pytest", () => {
+    const t = detectTestCommand(mk(["bin/test", "setup.py"]));
+    expect(t.framework).toContain("sympy");
+  });
+});
+
+describe("isTestInfraFailure — non-pytest python runners", () => {
+  const DJANGO = "django test runner (tests/runtests.py)";
+
+  it("flags a django startup failure as infrastructure", () => {
+    expect(isTestInfraFailure("Traceback...\nRuntimeError: Django module not found", 1, DJANGO)).toBe(true);
+  });
+
+  it("treats a real django test failure as repairable", () => {
+    const out = "Testing against Django installed in /x\nRan 42 tests in 1.2s\nFAILED (failures=1)";
+    expect(isTestInfraFailure(out, 1, DJANGO)).toBe(false);
+  });
+});
+
+describe("parseImplementationPlan — structural headings are not work units", () => {
+  it("drops 'Deliverable' style headings (django-10914 planned 8 units)", () => {
+    const md = [
+      "## Work unit 1",
+      "- Change `FILE_UPLOAD_PERMISSIONS = None` to `0o644` in global_settings.py",
+      "- Deliverable",
+      "## Work unit 2",
+      "- Update the FILE_UPLOAD_PERMISSIONS entry in the docs",
+      "- Deliverable",
+    ].join("\n");
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.some((u) => /^Deliverable$/i.test(u.description))).toBe(false);
+    expect(units.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a long line that merely starts with a heading word", () => {
+    const md = "1. Files touched by this change must also update the migration guide and tests\n";
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBe(1);
   });
 });

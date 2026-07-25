@@ -6,6 +6,7 @@
  * Env: OPENAI_API_KEY (required), OPENAI_BASE_URL (default api.openai.com).
  * Select with PROJECTOS_PROVIDER=openai or createMessage injection.
  */
+import { proxyFetch } from "./proxy-fetch";
 import type {
   CreateMessageFn,
   CreateMessageParams,
@@ -49,7 +50,11 @@ interface OpenAiResponse {
     message: { content: string | null; tool_calls?: OpenAiToolCall[] };
     finish_reason: string;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
   error?: { message: string };
 }
 
@@ -172,6 +177,9 @@ export function fromOpenAiResponse(res: OpenAiResponse): ChatResponse {
     usage: {
       input_tokens: res.usage?.prompt_tokens ?? 0,
       output_tokens: res.usage?.completion_tokens ?? 0,
+      // OpenAI reports automatically-cached prefix tokens here; surface them so
+      // traces show whether the proxy is caching (cacheRead was always 0 before).
+      cache_read_input_tokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
     },
   };
 }
@@ -187,34 +195,49 @@ export function openAiCreateMessage(opts: OpenAiAdapterOptions = {}): CreateMess
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
   const baseUrl = (opts.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com")
     .replace(/\/$/, "");
-  const doFetch = opts.fetchFn ?? fetch;
+  // Use proxy-aware fetch by default so Bun respects HTTPS_PROXY.
+  const doFetch = opts.fetchFn ?? proxyFetch;
   const maxRetries = opts.maxRetries ?? 5;
   if (!apiKey) throw new Error("openAiCreateMessage: OPENAI_API_KEY is not set");
 
   return async (params) => {
     const body = JSON.stringify(toOpenAiRequest(params));
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const res = await doFetch(`${baseUrl}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+      try {
+        const res = await doFetch(`${baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
 
-      if (res.ok) {
-        return fromOpenAiResponse((await res.json()) as OpenAiResponse);
-      }
+        if (res.ok) {
+          return fromOpenAiResponse((await res.json()) as OpenAiResponse);
+        }
 
-      const retryable = res.status === 429 || res.status >= 500;
-      if (!retryable || attempt === maxRetries - 1) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`openai: HTTP ${res.status} ${text.slice(0, 200)}`);
+        const retryable = res.status === 429 || res.status >= 500;
+        if (!retryable || attempt === maxRetries - 1) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`openai: HTTP ${res.status} ${text.slice(0, 200)}`);
+        }
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        console.error(`[openai retry ${attempt + 1}/${maxRetries}] HTTP ${res.status} — waiting ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (attempt === maxRetries - 1) {
+          throw err;
+        }
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        console.error(`[openai retry ${attempt + 1}/${maxRetries}] Network/Timeout Error: ${(err as Error).message} — waiting ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
       }
-      const delay = Math.min(2000 * 2 ** attempt, 30000);
-      console.error(`[openai retry ${attempt + 1}/${maxRetries}] HTTP ${res.status} — waiting ${delay}ms`);
-      await new Promise((r) => setTimeout(r, delay));
     }
     throw new Error("unreachable");
   };
