@@ -441,3 +441,25 @@ describe("isTestInfraFailure — non-pytest python runners", () => {
     expect(isTestInfraFailure(out, 1, DJANGO)).toBe(false);
   });
 });
+
+describe("parseImplementationPlan — structural headings are not work units", () => {
+  it("drops 'Deliverable' style headings (django-10914 planned 8 units)", () => {
+    const md = [
+      "## Work unit 1",
+      "- Change `FILE_UPLOAD_PERMISSIONS = None` to `0o644` in global_settings.py",
+      "- Deliverable",
+      "## Work unit 2",
+      "- Update the FILE_UPLOAD_PERMISSIONS entry in the docs",
+      "- Deliverable",
+    ].join("\n");
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.some((u) => /^Deliverable$/i.test(u.description))).toBe(false);
+    expect(units.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a long line that merely starts with a heading word", () => {
+    const md = "1. Files touched by this change must also update the migration guide and tests\n";
+    const units = parseImplementationPlan(md, "fallback");
+    expect(units.length).toBe(1);
+  });
+});

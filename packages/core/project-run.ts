@@ -390,10 +390,20 @@ export class ProjectRun implements AgentHandler {
   private testsCanRun(): boolean {
     if (this.testHarnessOk !== null) return this.testHarnessOk;
     const tc = detectTestCommand(this.cfg.workspace);
-    const probeArgs =
-      tc.framework === "pytest"
-        ? ["-m", "pytest", "--collect-only", "-q"]
-        : tc.args;
+    // The probe must be FAST and must test startup, not the suite. Running the
+    // real command timed out on django (thousands of tests) and the timeout was
+    // read as "harness broken" — losing real test feedback on 38% of the
+    // benchmark, where it was finally available.
+    let probeArgs: string[];
+    if (tc.framework === "pytest") {
+      probeArgs = ["-m", "pytest", "--collect-only", "-q"];
+    } else if (/django/i.test(tc.framework)) {
+      probeArgs = ["-c", "import django"];       // the actual failure mode
+    } else if (/sympy/i.test(tc.framework)) {
+      probeArgs = ["-c", "import sympy"];
+    } else {
+      probeArgs = tc.args;
+    }
     try {
       const r = spawnSync(tc.cmd, probeArgs, {
         cwd: this.cfg.workspace,
@@ -1183,7 +1193,20 @@ export class ProjectRun implements AgentHandler {
     const planPath = join(this.agentDir, "implementation-plan.md");
     if (!existsSync(planPath)) return [{ id: "wu-1", description: this.cfg.task }];
     const content = readFileSync(planPath, "utf8");
-    return parseImplementationPlan(content, this.cfg.task);
+    const units = parseImplementationPlan(content, this.cfg.task);
+    // A bug fix is one change, not a programme of work. Every extra unit costs
+    // a full IMPLEMENT + REVIEW cycle, and django-10914 was planned as 8 units
+    // for a one-line default change. The DESIGN prompt already asks for 1-3;
+    // this enforces it where the cost is actually incurred.
+    if (isBugFixTask(this.cfg.task) && units.length > 3) {
+      this.traceSystem("PLAN", {
+        decision: "capped work units for a bug-fix task",
+        planned: units.length,
+        kept: 3,
+      });
+      return units.slice(0, 3);
+    }
+    return units;
   }
 
   // ─── Entry point ───────────────────────────────────────────────────────────
@@ -1267,9 +1290,13 @@ export function parseImplementationPlan(content: string, fallbackTask: string): 
     let m: RegExpExecArray | null;
     while ((m = re.exec(src)) !== null) {
       const text = (m[1] ?? "").replace(/\*{1,2}/g, "").trim();
-      if (text.length > 5 && !/^(implementation|test|work unit|step|phase|overview|summary|note|introduction)/i.test(text)) {
-        out.push(text);
-      }
+      // Structural headings are not work units. Observed on django-10914: the
+      // plan yielded 8 "units", three of them literally "Deliverable" — each
+      // costing a full IMPLEMENT + REVIEW cycle.
+      const isHeading =
+        /^(implementation|test|work unit|step|phase|overview|summary|note|introduction|deliverable|acceptance|rationale|files?|scope|goal|context|dependencies|risks?)\b/i
+          .test(text) && text.length < 40;
+      if (text.length > 5 && !isHeading) out.push(text);
     }
     return out;
   }
