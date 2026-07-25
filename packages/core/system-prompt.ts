@@ -3,6 +3,12 @@ export interface SystemPromptOptions {
   branch?: string;
   memoryContext?: string;
   role?: "implementer" | "architect" | "reviewer" | "product-strategist";
+  /** Task-guided repo map (paths, symbols, excerpts). Lives in the system
+   *  prompt because it is static for the run and the system block carries a
+   *  cache breakpoint — so it is billed at cache-read rates after turn one. */
+  repoContext?: string;
+  /** The project's own test command, e.g. "python -m pytest". */
+  testCommand?: string;
 }
 
 export function buildSystemPrompt(opts: SystemPromptOptions): string {
@@ -52,6 +58,19 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
 
   if (opts.memoryContext) {
     sections.push("", "## Context from prior runs", opts.memoryContext);
+  }
+
+  if (opts.testCommand) {
+    sections.push(
+      "",
+      "## Testing",
+      `Run this project's tests with \`${opts.testCommand}\`. Prefer running only the ` +
+        "tests covering your change — the full suite may be slow.",
+    );
+  }
+
+  if (opts.repoContext) {
+    sections.push("", "## Repository map", opts.repoContext);
   }
 
   return sections.join("\n");

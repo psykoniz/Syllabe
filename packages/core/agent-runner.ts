@@ -129,6 +129,11 @@ export interface AgentRunnerOptions {
   /** Max characters of a single tool result fed back to the model (default 16000) */
   maxToolResultChars?: number;
   maxTokensPerTurn?: number;
+  /** Hard ceiling on total tokens for this loop. When exceeded the loop stops
+   *  and returns with stopReason "token_budget" instead of running to
+   *  maxIterations. Without it a single session on a real repository is
+   *  unbounded — the state machine had this guard, the plain loop did not. */
+  tokenBudget?: number;
   /** Context compaction policy. Defaults to DEFAULT_COMPACTION (~80k tokens). */
   compaction?: CompactionOptions;
   onTurn?: (info: TurnInfo) => void;
@@ -566,6 +571,19 @@ export async function runAgent(
     // instead of an empty string.
     const latestText = textOf(response.content);
     if (latestText) finalText = latestText;
+
+    // Spend ceiling: stop before dispatching another round of tools.
+    if (opts.tokenBudget && inputTokens + outputTokens > opts.tokenBudget) {
+      return {
+        finalText:
+          finalText ||
+          `[stopped: token budget of ${opts.tokenBudget.toLocaleString()} exceeded]`,
+        messages,
+        usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
+        turns: turn,
+        stopReason: "token_budget",
+      };
+    }
 
     // Run all tool calls concurrently — read-only calls (read_file, glob_files,
     // grep_files, git_status, git_diff) are embarrassingly parallel; write calls

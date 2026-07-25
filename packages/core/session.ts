@@ -11,6 +11,9 @@ import type { ApprovalHandler } from "@projectos/policy";
 import { runAgent } from "./agent-runner";
 import type { CreateMessageFn, MessageParam, AgentRunResult } from "./agent-runner";
 import { proxyFetch } from "./proxy-fetch";
+import { buildSmartRepoContext } from "./repo-context";
+import { detectTestCommand } from "./workspace-runner";
+import { GlobalMemory, projectKeyFor } from "@projectos/memory";
 import { buildSystemPrompt } from "./system-prompt";
 import type { SystemPromptOptions } from "./system-prompt";
 import {
@@ -57,7 +60,17 @@ export interface SessionConfig {
   /** Injectable for tests; defaults to the real Anthropic client.
    *  Reads ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL from env. */
   createMessage?: CreateMessageFn;
+  /** Hard ceiling on total tokens for the session (default 1M ≈ a few dollars).
+   *  Set 0 to disable. */
+  tokenBudget?: number;
+  /** Skip the task-guided repository map (on by default when the workspace is
+   *  a git repo — it is the single most useful context for real codebases). */
+  noRepoContext?: boolean;
 }
+
+/** ~1M tokens: a few dollars at premium rates. Generous for an interactive
+ *  session, but bounded — an unguarded loop on a real repo has no ceiling. */
+const DEFAULT_SESSION_TOKEN_BUDGET = 1_000_000;
 
 export interface RunRecord {
   runId: string;
@@ -173,13 +186,39 @@ export class ProjectSession {
     const skills    = new SkillStore(skillsPath);
     const projMem   = new ProjectMemory(projectMemPath);
 
+    // Global (cross-run, per-project) lessons on top of the workspace-local
+    // ones: these survive fresh clones and are the whole point of the memory
+    // layer when the same repositories are worked on repeatedly.
+    let globalLessons = "";
+    try {
+      globalLessons = new GlobalMemory({
+        project: projectKeyFor(this.config.workspace),
+      }).toContextBlock(topic);
+    } catch {
+      // global memory is best-effort
+    }
+
     return assembleContext({
       prefs:    userMem.toContextBlock(),
       commands: projMem.toContextBlock(),
       adrs:     adrStore.toContextBlock(),
-      lessons:  lessons.toContextBlock(topic),
+      lessons:  [globalLessons, lessons.toContextBlock(topic)].filter(Boolean).join("\n"),
       skills:   skills.toContextBlock(),
     });
+  }
+
+  /** Task-guided repository map: keyword-matched files ranked by import-graph
+   *  PageRank, with symbol signatures and excerpts. Only for git workspaces —
+   *  this is the highest-value context when working on an existing codebase,
+   *  and it was previously available only through the full state machine. */
+  private loadRepoContext(topic: string): string {
+    if (this.config.noRepoContext) return "";
+    if (!existsSync(join(this.config.workspace, ".git"))) return "";
+    try {
+      return buildSmartRepoContext(this.config.workspace, topic);
+    } catch {
+      return "";
+    }
   }
 
   private buildToolContext(): ToolContext {
@@ -224,6 +263,8 @@ export class ProjectSession {
         branch: toolContext.branch?.(),
         role: this.config.role,
         memoryContext: memoryContext || undefined,
+        repoContext: this.loadRepoContext(topic) || undefined,
+        testCommand: detectTestCommand(this.config.workspace).display,
       });
 
     const result = await runAgent(messages, {
@@ -233,6 +274,9 @@ export class ProjectSession {
       toolContext: toolContext,
       approval: this.config.approval,
       maxIterations: this.config.maxIterations,
+      // Default ceiling so a session on a real repository cannot run away;
+      // 0 disables it explicitly.
+      tokenBudget: this.config.tokenBudget ?? DEFAULT_SESSION_TOKEN_BUDGET,
     });
 
     this.saveMessages(runId, result.messages);
