@@ -380,3 +380,19 @@ describe("isTestInfraFailure", () => {
     expect(isTestInfraFailure("2 passed", 0, "pytest")).toBe(false);
   });
 });
+
+describe("isTestInfraFailure — generalized pytest detection", () => {
+  it("catches the plugin-loader failure that exits 1 (astropy-6938)", () => {
+    const out = 'ImportError: Error importing plugin "astropy.tests.plugins.config": astropy';
+    expect(isTestInfraFailure(out, 1, "pytest")).toBe(true);
+  });
+
+  it("catches UNKNOWN signatures: exit 1 but pytest never reached collection", () => {
+    expect(isTestInfraFailure("Traceback...\nSomeNeverSeenError: boom", 1, "pytest")).toBe(true);
+  });
+
+  it("still treats a real test failure as repairable", () => {
+    expect(isTestInfraFailure("collected 12 items\n1 failed, 11 passed", 1, "pytest")).toBe(false);
+    expect(isTestInfraFailure("3 failed, 40 passed", 1, "pytest")).toBe(false);
+  });
+});

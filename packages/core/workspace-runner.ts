@@ -97,6 +97,7 @@ export function detectTestCommand(workspace: string): TestCommand {
  *  so sending them to REPAIR burns the whole repair budget for nothing. */
 const INFRA_FAILURE_PATTERNS = [
   /ImportError while loading conftest/i,
+  /Error importing plugin/i,          // pytest plugin loader died at startup
   /ERROR collecting/i,
   /INTERNALERROR/i,
   /broken installation/i,
@@ -105,16 +106,38 @@ const INFRA_FAILURE_PATTERNS = [
   /command not found/i,
 ];
 
+/** Evidence that pytest actually reached collection and ran something. Their
+ *  absence means it died at startup, whatever the exit code.
+ *  Deliberately generous: mistaking a real failure for an infra problem skips
+ *  repairs that were needed, which is worse than the reverse — and tool output
+ *  is truncated, so a summary line can legitimately be missing. */
+const PYTEST_RAN_PATTERNS = [
+  /collected \d+ item/i,
+  /\d+ (passed|failed|error|skipped|xfailed|deselected)/i,
+  /no tests ran/i,
+  /FAILED \S+::/,                     // per-test failure line
+  /^E\s+\w/m,                         // pytest assertion detail lines
+  /assert /,                          // an assertion was evaluated
+];
+
 /** True when the failure is the harness itself, not the code under test. */
 export function isTestInfraFailure(
   output: string,
   exitCode: number,
   framework: string
 ): boolean {
-  // pytest exit codes: 0 ok | 1 tests failed | 2 interrupted | 3 internal
-  // error | 4 usage error | 5 no tests collected. Only 1 is a real failure.
-  if (framework === "pytest" && exitCode !== 0 && exitCode !== 1) return true;
-  return INFRA_FAILURE_PATTERNS.some((re) => re.test(output));
+  if (INFRA_FAILURE_PATTERNS.some((re) => re.test(output))) return true;
+  if (framework === "pytest") {
+    // Exit codes: 0 ok | 1 tests failed | 2 interrupted | 3 internal error |
+    // 4 usage error | 5 nothing collected. Anything but 0/1 is infrastructure.
+    if (exitCode !== 0 && exitCode !== 1) return true;
+    // Exit code 1 is NOT reliably a test failure: a plugin that fails to
+    // import at startup also exits 1 (astropy-6938). The robust signal is
+    // whether pytest ever reached collection — this catches signatures we
+    // have never seen, instead of needing one pattern per failure mode.
+    if (exitCode === 1 && !PYTEST_RAN_PATTERNS.some((re) => re.test(output))) return true;
+  }
+  return false;
 }
 
 /** Run the project's own test command in the workspace and capture output. */
