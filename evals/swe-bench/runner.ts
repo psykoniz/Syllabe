@@ -257,6 +257,17 @@ export async function runSWEBenchSuite(
 
     const icon = result.producedPatch ? "✎" : "∅";
     console.log(`  ${icon} ${result.agentState} | patch ${result.patchSize}B | $${result.costUsd.toFixed(4)} | ${Math.round(result.durationMs / 1000)}s | ${result.notes}`);
+
+    // Auth/billing failures are not transient: every remaining instance will
+    // fail the same way. Continuing just re-clones large repos for nothing —
+    // observed burning 7 matplotlib clones after the credit ran out.
+    if (/\b(401|403)\b|insufficient balance|billing_error|invalid[_ ]api[_ ]key|authentication/i.test(result.notes)) {
+      console.error(
+        `\nAborting suite: provider rejected the request (auth/billing). ` +
+        `${results.length}/${instances.length} instances attempted.`
+      );
+      break;
+    }
   }
 
   const suite: SWEBenchSuiteResult = {
