@@ -14,7 +14,7 @@
  *   4. append a prediction line; the official harness verifies later
  */
 
-import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, rmSync, copyFileSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { tmpdir } from "os";
@@ -103,6 +103,8 @@ export async function runInstance(
     autoSteering?: boolean;
     /** Hard per-instance token ceiling — the only in-run spend guard. */
     tokenBudgetPerInstance?: number;
+    /** Where to keep the preserved per-instance trace. */
+    outputDir?: string;
   } = {}
 ): Promise<{ result: SWEBenchRunResult; predictionLine: string | null }> {
   const start = Date.now();
@@ -161,6 +163,18 @@ export async function runInstance(
   } catch (err) {
     notes = `error: ${(err as Error).message}`;
   } finally {
+    // Preserve the trace BEFORE deleting the workspace. Without this every run
+    // was analysable and then erased, so per-state cost/duration could never be
+    // studied after the fact — the data needed to find where spend concentrates.
+    try {
+      if (existsSync(tracePath)) {
+        const keepDir = join(opts.outputDir ?? OUTPUT_DIR, "traces");
+        mkdirSync(keepDir, { recursive: true });
+        copyFileSync(tracePath, join(keepDir, `${instance.instance_id}.jsonl`));
+      }
+    } catch {
+      // trace preservation is best-effort
+    }
     try {
       rmSync(workspace, { recursive: true, force: true });
     } catch {
