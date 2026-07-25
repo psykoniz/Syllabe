@@ -399,6 +399,7 @@ export class ProjectRun implements AgentHandler {
         cwd: this.cfg.workspace,
         encoding: "utf8",
         timeout: 90_000,
+        ...(tc.env ? { env: { ...process.env, ...tc.env } } : {}),
       });
       const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
       const code = r.status ?? -1;

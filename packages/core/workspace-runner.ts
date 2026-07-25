@@ -64,6 +64,9 @@ export interface TestCommand {
   display: string;
   /** Framework name for "write tests using X" instructions */
   framework: string;
+  /** Extra env the runner needs (django's runtests.py needs the repo on
+   *  PYTHONPATH to import the in-tree package). */
+  env?: Record<string, string>;
 }
 
 /** Detect the project's real test command from its manifest files.
@@ -72,6 +75,36 @@ export interface TestCommand {
  *  burned its whole REPAIR budget "fixing" a patch that was never the problem. */
 export function detectTestCommand(workspace: string): TestCommand {
   const has = (...names: string[]) => names.some((n) => existsSync(join(workspace, n)));
+
+  // Project-specific runners MUST be checked before the generic pytest branch:
+  // these repos also ship setup.py/pyproject.toml, so a manifest-only check
+  // picks pytest and is simply wrong. Commands mirror the official SWE-bench
+  // specs (swebench.harness.constants.MAP_REPO_VERSION_TO_SPECS), which cover
+  // ~69% of SWE-bench Lite between django, sympy and sphinx.
+  if (has("tests/runtests.py")) {
+    // django: its suite is driven by tests/runtests.py, never bare pytest.
+    const args = ["tests/runtests.py", "--verbosity", "2", "--parallel", "1"];
+    if (has("tests/test_sqlite.py")) args.push("--settings=test_sqlite");
+    return {
+      cmd: "python",
+      args,
+      // PYTHONPATH=. is required: runtests.py imports the in-tree django, and
+      // without it dies with "Django module not found" before any test runs.
+      display: `PYTHONPATH=. python ${args.join(" ")}`,
+      framework: "django test runner (tests/runtests.py)",
+      env: { PYTHONPATH: "." },
+    };
+  }
+  if (has("bin/test")) {
+    // sympy: custom runner; accepts file/module paths as arguments.
+    return {
+      cmd: "python",
+      args: ["bin/test"],
+      display: "PYTHONPATH=. python bin/test",
+      framework: "sympy test runner (bin/test)",
+      env: { PYTHONPATH: "." },
+    };
+  }
 
   if (has("pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini", "conftest.py")) {
     return { cmd: "python", args: ["-m", "pytest", "-x", "-q"], display: "python -m pytest", framework: "pytest" };
@@ -120,6 +153,15 @@ const PYTEST_RAN_PATTERNS = [
   /assert /,                          // an assertion was evaluated
 ];
 
+/** Evidence that a non-pytest Python runner (django/sympy) reached its tests. */
+const PY_RUNNER_RAN_PATTERNS = [
+  /Ran \d+ test/i,                 // unittest / django
+  /Testing against Django/i,       // django runtests.py banner
+  /\bFAIL(ED)?\b:/,                // unittest failure header
+  /tests finished/i,               // sympy summary
+  /\d+ (passed|failed)/i,
+];
+
 /** True when the failure is the harness itself, not the code under test. */
 export function isTestInfraFailure(
   output: string,
@@ -127,6 +169,11 @@ export function isTestInfraFailure(
   framework: string
 ): boolean {
   if (INFRA_FAILURE_PATTERNS.some((re) => re.test(output))) return true;
+  // Non-pytest Python runners (django, sympy): a startup traceback with no
+  // sign that tests ran means the harness died, not that the code is wrong.
+  if (/django|sympy/i.test(framework) && exitCode !== 0) {
+    if (!PY_RUNNER_RAN_PATTERNS.some((re) => re.test(output))) return true;
+  }
   if (framework === "pytest") {
     // Exit codes: 0 ok | 1 tests failed | 2 interrupted | 3 internal error |
     // 4 usage error | 5 nothing collected. Anything but 0/1 is infrastructure.
@@ -147,6 +194,7 @@ export function runWorkspaceTests(workspace: string, timeoutMs = 120_000): TestR
     cwd: workspace,
     encoding: "utf8",
     timeout: timeoutMs,
+    ...(tc.env ? { env: { ...process.env, ...tc.env } } : {}),
   });
   // A missing interpreter (ENOENT) is not a test failure — surface it as such
   // so the caller does not send the agent into a pointless repair loop.

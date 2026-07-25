@@ -396,3 +396,48 @@ describe("isTestInfraFailure — generalized pytest detection", () => {
     expect(isTestInfraFailure("3 failed, 40 passed", 1, "pytest")).toBe(false);
   });
 });
+
+describe("detectTestCommand — project-specific runners (69% of SWE-bench Lite)", () => {
+  const mk = (files: string[]) => {
+    const d = mkdtempSync(join(tmpdir(), "runner-"));
+    for (const f of files) {
+      const full = join(d, f);
+      mkdirSync(join(full, ".."), { recursive: true });
+      writeFileSync(full, "");
+    }
+    return d;
+  };
+
+  it("detects django's runtests.py, not pytest (django ships setup.py too)", () => {
+    const t = detectTestCommand(mk(["tests/runtests.py", "setup.py", "pyproject.toml"]));
+    expect(t.framework).toContain("django");
+    expect(t.args).toContain("tests/runtests.py");
+    // runtests.py cannot import the in-tree package without this
+    expect(t.env?.PYTHONPATH).toBe(".");
+  });
+
+  it("adds --settings=test_sqlite only when that settings file exists", () => {
+    expect(detectTestCommand(mk(["tests/runtests.py", "tests/test_sqlite.py"])).display)
+      .toContain("--settings=test_sqlite");
+    expect(detectTestCommand(mk(["tests/runtests.py"])).display)
+      .not.toContain("--settings");
+  });
+
+  it("detects sympy's bin/test over pytest", () => {
+    const t = detectTestCommand(mk(["bin/test", "setup.py"]));
+    expect(t.framework).toContain("sympy");
+  });
+});
+
+describe("isTestInfraFailure — non-pytest python runners", () => {
+  const DJANGO = "django test runner (tests/runtests.py)";
+
+  it("flags a django startup failure as infrastructure", () => {
+    expect(isTestInfraFailure("Traceback...\nRuntimeError: Django module not found", 1, DJANGO)).toBe(true);
+  });
+
+  it("treats a real django test failure as repairable", () => {
+    const out = "Testing against Django installed in /x\nRan 42 tests in 1.2s\nFAILED (failures=1)";
+    expect(isTestInfraFailure(out, 1, DJANGO)).toBe(false);
+  });
+});
